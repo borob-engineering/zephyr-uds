@@ -1,5 +1,0 @@
-/ {
-    chosen {
-        zephyr,entropy = &rng; /* Oder wie das Krypto/RNG-Modul in deinem SoC .dtsi heißt */
-    };
-};
