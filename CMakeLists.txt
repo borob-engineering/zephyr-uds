@@ -17,6 +17,6 @@ zephyr_library_sources(src/uds_iocontrol.c)
 zephyr_library_sources(src/uds_weak_defaults.c)
 
 # Macht die Header im Include-Ordner global für Applikationen verfügbar
-zephyr_library_include_directories(include)
+zephyr_include_directories(include)
 
 endif()
