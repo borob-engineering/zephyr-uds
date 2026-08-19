@@ -19,12 +19,13 @@
 #define UDS_NRC_CONDITIONS_NOT_CORRECT                   0x22
 #define UDS_NRC_REQUEST_SEQUENCE_ERROR                   0x24
 #define UDS_NRC_REQUEST_OUT_OF_RANGE                     0x31
-#define UDS_NRC_SECURITY_ACCESS_DENIED               0x33
+#define UDS_NRC_SECURITY_ACCESS_DENIED                   0x33
 #define UDS_NRC_INVALID_KEY                              0x35
-#define UDS_NRC_EXCEEDED_NUMBER_OF_ATTEMPTS          0x36
+#define UDS_NRC_EXCEEDED_NUMBER_OF_ATTEMPTS              0x36
 #define UDS_NRC_UPLOAD_DOWNLOAD_NOT_ACCEPTED            0x70
 #define UDS_NRC_TRANSFER_DATA_SUSPENDED                  0x71
 #define UDS_NRC_WRONG_BLOCK_SEQUENCE_COUNTER             0x73
+#define UDS_NRC_RESPONSE_PENDING                         0x78
 #define UDS_NRC_SUB_FUNCTION_NOT_SUPPORTED_IN_ACTIVE_SESS 0x7E
 #define UDS_NRC_SERVICE_NOT_SUPPORTED_IN_ACTIVE_SESSION  0x7F
 
@@ -54,8 +55,9 @@ typedef enum {
 } routine_status_t;
 
 typedef struct {
-    uint8_t code[3];
-    uint8_t status;
+    uint8_t code[3]; /* Array aus 3 Bytes für die DTC-Nummer */
+    uint8_t status;  /* Status-Bitmaske */
 } uds_dtc_t;
+
 
 #endif /* UDS_TYPES_H_ */

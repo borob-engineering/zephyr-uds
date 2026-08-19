@@ -17,28 +17,27 @@ static uds_dtc_t mock_dtc_server[MOCK_DTC_COUNT];
 
 void uds_read_dtc_init(void)
 {
+    /* Beispiel-DTC 1: P1234-56 (Index 0) -> Aktiv und Bestätigt */
     mock_dtc_server[0].code[0] = 0x12;
     mock_dtc_server[0].code[1] = 0x34;
     mock_dtc_server[0].code[2] = 0x56;
     mock_dtc_server[0].status  = 0x09; /* testFailed | confirmedDTC */
 
+    /* Beispiel-DTC 2: U0100-00 (Index 1) -> Nur Bestätigt, im Moment passiv */
     mock_dtc_server[1].code[0] = 0xC1;
     mock_dtc_server[1].code[1] = 0x00;
     mock_dtc_server[1].code[2] = 0x00;
     mock_dtc_server[1].status  = 0x08; /* confirmedDTC */
 }
 
-/* NEU: Setzt die Status-Masken der passenden DTCs zurück */
 void uds_read_dtc_clear_all(uint32_t dtc_group)
 {
     LOG_INF("DTC Clear API aufgerufen für Gruppe: 0x%06X", dtc_group);
 
     for (int i = 0; i < MOCK_DTC_COUNT; i++) {
-        /* 0xFFFFFF bedeutet 'alle DTC-Gruppen löschen' nach ISO 14229 */
         if (dtc_group == 0xFFFFFF) {
-            mock_dtc_server[i].status = 0x00; /* Fehler komplett passivieren/löschen */
+            mock_dtc_server[i].status = 0x00;
         }
-        /* Hier könnten optional spezifischere Gruppenfilter (z.B. Body, Powertrain) greifen */
     }
 }
 
@@ -67,7 +66,6 @@ void uds_read_dtc_handle(uint8_t *req, size_t len, uint8_t *tx_buf,
     tx_buf[tx_idx++] = DTC_STATUS_AVAILABILITY_MASK;
 
     for (int i = 0; i < MOCK_DTC_COUNT; i++) {
-        /* Nur DTCs anhängen, deren Status-Bits mit der angeforderten Maske übereinstimmen und aktiv (!=0) sind */
         if (mock_dtc_server[i].status != 0x00 && (mock_dtc_server[i].status & client_status_mask) != 0) {
             
             if ((tx_idx + 4) >= UDS_BUFF_SIZE) {

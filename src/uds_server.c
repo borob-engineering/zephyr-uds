@@ -1,6 +1,6 @@
 /**
  * @file uds_server.c
- * @brief UDS Core Server mit funktionalem Adressierungs-Routing für Zephyr RTOS v4.4.0
+ * @brief UDS Core Server & ISO-TP Connection Handling für Zephyr RTOS v4.4.0
  */
 
 #include <zephyr/kernel.h>
@@ -118,7 +118,7 @@ static void uds_process_request(uint8_t *req, size_t len, uds_addressing_t addr_
         break;
 
     case 0x14: /* Clear Diagnostic Information */
-        uds_clear_dtc_handle(req, len, uds_tx_buf, uds_send_response, uds_send_nrc);
+        uds_clear_dtc_handle(req, len, uds_send_response, uds_send_nrc);
         break;
 
     case 0x19: /* Read DTC Information */
@@ -164,7 +164,7 @@ static void uds_process_request(uint8_t *req, size_t len, uds_addressing_t addr_
         break;
 
     case 0x31: /* Routine Control */
-        uds_routine_handle_control(req, len, uds_tx_buf, uds_send_response, uds_send_nrc);
+        uds_routine_handle_control(req, len, uds_send_response, uds_send_nrc);
         break;
 
     case 0x34: /* Request Download */
