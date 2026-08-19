@@ -11,8 +11,9 @@ target_sources(app PRIVATE
     src/uds_reset.c
     src/uds_clear_dtc.c
     src/uds_read_dtc.c
-    src/uds_data_storage.c
     src/uds_write_did.c
     src/uds_flash_pipeline.c
     src/uds_iocontrol.c
+    src/uds_weak_defaults.c       # Generischer Bestandteil
+    src/app_uds_implementation.c  # Applikations-Spezifisch
 )
