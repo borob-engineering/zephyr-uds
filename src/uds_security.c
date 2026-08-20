@@ -9,7 +9,7 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/entropy.h>
 #include <zephyr/drivers/flash.h>
-#include <zephyr/fs/nvs.h> /* Zephyr Non-Volatile Storage API */
+#include <zephyr/kvss/nvs.h> /* KORREKTUR: Modernes Zephyr 4.4.0 KVSS-Header anstelle von fs/nvs.h */
 #include <zephyr/logging/log.h>
 #include <string.h>
 
@@ -80,7 +80,7 @@ void uds_security_init(void)
 	uint8_t stored_lockout = 0;
 	ret = nvs_read(&fs, NVS_LOCKOUT_STATE_ID, &stored_lockout, sizeof(stored_lockout));
 	if (ret > 0 && stored_lockout == 1) {
-		/* SERIEN-REBOOT-REGEL: Reaktivierung der Sperre, falls das Gerät im Lockout resettet wurde */
+		/* REBOOT-REGEL: Reaktivierung der Sperre, falls das Gerät im Lockout resettet wurde */
 		security_status = UDS_SEC_BRUTE_FORCE_LOCKOUT;
 		failed_attempts_counter = MAX_FAILED_ATTEMPTS;
 		k_timer_start(&lockout_timer, K_MSEC(LOCKOUT_TIME_MS), K_NO_WAIT);
