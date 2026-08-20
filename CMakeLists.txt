@@ -18,6 +18,8 @@ zephyr_library_sources(src/uds_write_did.c)
 zephyr_library_sources(src/uds_flash_pipeline.c)
 zephyr_library_sources(src/uds_iocontrol.c)
 zephyr_library_sources(src/uds_weak_defaults.c)
+zephyr_library_sources(src/uds_periodic.c)
+zephyr_library_sources(src/uds_dynamic_did.c)
 
 # Macht die Header im Include-Ordner global für Applikationen verfügbar
 zephyr_include_directories(include)

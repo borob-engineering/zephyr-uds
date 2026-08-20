@@ -47,29 +47,37 @@ static struct k_thread uds_rx_thread_data;
 
 static uds_addressing_t current_msg_addressing = UDS_ADDR_PHYSICAL;
 
+extern void uds_handle_periodic_request(uint8_t *req, size_t len, void (*send_cb)(const uint8_t *, size_t), void (*nrc_cb)(uint8_t, uint8_t));
+extern void uds_handle_define_dynamic_did(uint8_t *req, size_t len, void (*send_cb)(const uint8_t *, size_t), void (*nrc_cb)(uint8_t, uint8_t));
+extern int uds_read_dynamic_did_payload(uint16_t did, uint8_t *buf_out, size_t *len_out);
+
 static void uds_send_response(const uint8_t *data, size_t len)
 {
 	int ret = isotp_send(&tx_ctx, can_dev, data, len, &tx_link, &rx_link, NULL, NULL);
 	if (ret != ISOTP_N_OK) LOG_ERR("ISO-TP Sendefehler: %d", ret);
 }
 
-/**
- * @brief Erzeugt und sendet einen Negative Response Code (NRC) mit striktem Serien-Funktional-Filter
- */
 static void uds_send_nrc(uint8_t sid, uint8_t nrc)
 {
-	/* STRIKTE ISO 14229-1 SERIENREGEL: Wenn die Anfrage FUNKTIONAL (0x7DF) hereinkam, 
-	 * darf ein NRC NUR DANN gesendet werden, wenn es ein RESPONSE_PENDING (0x78) ist. 
-	 * Alle anderen Fehler (Länge, Security, etc.) werden komplett verschwiegen. */
 	if (current_msg_addressing == UDS_ADDR_FUNCTIONAL) {
 		if (nrc != UDS_NRC_RESPONSE_PENDING) {
-			LOG_DBG("Funktionale Adressierung: NRC 0x%02X fuer SID 0x%02X regelkonform unterdrueckt.", nrc, sid);
+			LOG_DBG("Funktionaler NRC 0x%02X regelkonform unterdrueckt.", nrc);
 			return;
 		}
 	}
-
 	uint8_t nrc_buf[] = {0x7F, sid, nrc};
 	uds_send_response(nrc_buf, sizeof(nrc_buf));
+}
+
+void uds_trigger_event_response(uint8_t event_type, const uint8_t *payload, size_t len)
+{
+	uint8_t event_buf[UDS_BUFF_SIZE];
+	event_buf[0] = 0x86;
+	event_buf[1] = event_type;
+	if (len > 0 && payload != NULL && (len + 2) < UDS_BUFF_SIZE) {
+		memcpy(&event_buf[2], payload, len);
+	}
+	uds_send_response(event_buf, 2 + len);
 }
 
 static void uds_process_request(uint8_t *req, size_t len, uds_addressing_t addr_type)
@@ -79,6 +87,7 @@ static void uds_process_request(uint8_t *req, size_t len, uds_addressing_t addr_
 	uds_session_refresh_timer();
 
 	uint8_t sid = req[0];
+	LOG_INF("UDS Request [%s]. SID: 0x%02X", (addr_type == UDS_ADDR_PHYSICAL) ? "PHYS" : "FUNC", sid);
 
 	switch (sid) {
 	case 0x10:
@@ -95,16 +104,22 @@ static void uds_process_request(uint8_t *req, size_t len, uds_addressing_t addr_
 	case 0x14: uds_clear_dtc_handle(req, len, uds_send_response, uds_send_nrc); break;
 	case 0x19: uds_read_dtc_handle(req, len, uds_tx_buf, uds_send_response, uds_send_nrc); break;
 
-	case 0x22: /* Read DID */
+	case 0x22:
 		if (len < 3) { uds_send_nrc(sid, UDS_NRC_INCORRECT_LENGTH_OR_INVALID_FORMAT); break; }
-		uint16_t did = ((uint16_t)req[1] << 8) | req[2];
-		size_t out_len = 0;
+		uint16_t read_did = ((uint16_t)req[1] << 8) | req[2];
+		size_t d_len = 0;
 		
-		int ret = uds_app_read_did(did, &uds_tx_buf[3], &out_len, UDS_BUFF_SIZE - 3);
-		if (ret == 0) {
+		if (uds_read_dynamic_did_payload(read_did, &uds_tx_buf[3], &d_len) == 0) {
 			uds_tx_buf[0] = sid + 0x40; uds_tx_buf[1] = req[1]; uds_tx_buf[2] = req[2];
-			uds_send_response(uds_tx_buf, 3 + out_len);
-		} else if (ret == -ENOMEM) {
+			uds_send_response(uds_tx_buf, 3 + d_len);
+			break;
+		}
+		
+		int r_ret = uds_app_read_did(read_did, &uds_tx_buf[3], &d_len, UDS_BUFF_SIZE - 3);
+		if (r_ret == 0) {
+			uds_tx_buf[0] = sid + 0x40; uds_tx_buf[1] = req[1]; uds_tx_buf[2] = req[2];
+			uds_send_response(uds_tx_buf, 3 + d_len);
+		} else if (r_ret == -ENOMEM) {
 			uds_send_nrc(sid, UDS_NRC_RESPONSE_PENDING);
 		} else {
 			uds_send_nrc(sid, UDS_NRC_REQUEST_OUT_OF_RANGE);
@@ -117,6 +132,9 @@ static void uds_process_request(uint8_t *req, size_t len, uds_addressing_t addr_
 		break;
 
 	case 0x2E: uds_write_did_handle(req, len, uds_tx_buf, uds_send_response, uds_send_nrc); break;
+	case 0x2A: uds_handle_periodic_request(req, len, uds_send_response, uds_send_nrc); break;
+	case 0x2C: uds_handle_define_dynamic_did(req, len, uds_send_response, uds_send_nrc); break;
+	
 	case 0x2F:
 		if (addr_type == UDS_ADDR_FUNCTIONAL) { uds_send_nrc(sid, UDS_NRC_CONDITIONS_NOT_CORRECT); break; }
 		uds_handle_io_control(req, len, uds_tx_buf, uds_send_response, uds_send_nrc);
@@ -136,6 +154,12 @@ static void uds_process_request(uint8_t *req, size_t len, uds_addressing_t addr_
 	case 0x37:
 		if (addr_type == UDS_ADDR_FUNCTIONAL) { uds_send_nrc(sid, UDS_NRC_CONDITIONS_NOT_CORRECT); break; }
 		uds_handle_request_transfer_exit(req, len, uds_tx_buf, uds_send_response, uds_send_nrc);
+		break;
+
+	case 0x86:
+		if (len < 3) { uds_send_nrc(sid, UDS_NRC_INCORRECT_LENGTH_OR_INVALID_FORMAT); break; }
+		uds_tx_buf[0] = sid + 0x40; uds_tx_buf[1] = req[1]; uds_tx_buf[2] = req[2];
+		uds_send_response(uds_tx_buf, 3);
 		break;
 
 	case 0x3E:
