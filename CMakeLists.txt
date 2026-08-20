@@ -3,6 +3,9 @@ if(CONFIG_UDS_SERVER)
 
 zephyr_library()
 
+# Macht den Include-Pfad für interne Moduldateien während der Kompilierung sichtbar
+zephyr_library_include_directories(include/zephyr/canbus)
+
 # Dateien werden nur einkompiliert, wenn das Subsystem via Kconfig aktiviert wurde
 zephyr_library_sources(src/uds_server.c)
 zephyr_library_sources(src/uds_session.c)
