@@ -23,4 +23,8 @@ int uds_app_io_control(uint16_t did, uint8_t control_param, const uint8_t *contr
 int uds_app_routine_start(uint16_t routine_id, uint8_t *info_out);
 int uds_app_routine_request_results(uint16_t routine_id, uint8_t *status_out, uint8_t *exit_info_out);
 
+/* --- SERVICES 0x34 / 0x36 / 0x37: REAL HARDWARE FLASH PIPELINE --- */
+int uds_app_flash_erase_target(uint32_t address, size_t size);
+int uds_app_flash_write_block(uint32_t address_offset, const uint8_t *data, size_t len);
+
 #endif /* UDS_APP_INTERFACE_H_ */
