@@ -2,10 +2,6 @@
 
 Das Modul fungiert als vollständig entkoppelte, hardwareunabhängige **Protokoll-Engine (Services & Timing)** nach ISO 14229-1 und ISO 15765-2. Alle anwendungsspezifischen Daten und Hardwarezugriffe werden über eine compilezeit-sichere `__weak`-Schnittstelle an die Applikationsschicht delegiert.
 
-## 📄 Lizenz
-
-Dieses Projekt ist unter der Apache License 2.0 lizenziert – siehe die [LICENSE](LICENSE) Datei für Details.
-
 ---
 
 ### 📥 1. Transport- & Netzwerkschicht (ISO 15765-2 / CAN-Bus)
@@ -99,3 +95,6 @@ python uds_hardware_tester.py
 
 Das Skript verwendet standardmäßig die physikalische UDS-Anfrage-ID **`0x7E0`** (TX) und horcht auf der ID **`0x7E8`** (RX) auf Antworten des Zephyr-Knotens.
 
+## 📄 Lizenz
+
+Dieses Projekt ist unter der Apache License 2.0 lizenziert – siehe die [LICENSE](LICENSE) Datei für Details.
