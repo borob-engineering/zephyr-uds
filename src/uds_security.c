@@ -9,6 +9,7 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/entropy.h>
 #include <zephyr/drivers/flash.h>
+#include <zephyr/storage/flash_map.h> /* Für dynamische Devicetree Fixed-Partition Makros */
 #include <zephyr/kvss/nvs.h> /* Zukunftssicherer KVSS-Pfad für Zephyr 4.4.0 */
 #include <zephyr/logging/log.h>
 #include <string.h>
@@ -22,13 +23,18 @@ LOG_MODULE_DECLARE(uds_server, LOG_LEVEL_INF);
 #define NVS_DTC_COUNTER_ID   1
 #define NVS_LOCKOUT_STATE_ID 2
 
+/* ID des Storage-Partitions-Knotens aus dem Devicetree auflösen */
+#define STORAGE_PARTITION_NODE    DT_NODELABEL(storage_partition)
+#define STORAGE_PARTITION_DEVICE  DEVICE_DT_GET(DT_MTD_FROM_FIXED_PARTITION(STORAGE_PARTITION_NODE))
+#define STORAGE_PARTITION_OFFSET  DT_REG_ADDR(STORAGE_PARTITION_NODE)
+#define STORAGE_PARTITION_SIZE    DT_REG_SIZE(STORAGE_PARTITION_NODE)
+
 static uds_security_status_t security_status = UDS_SEC_LOCKED;
 static uint8_t generated_seed[SECURITY_SEED_SIZE];
 static uint8_t failed_attempts_counter = 0;
 static struct k_timer lockout_timer;
 
 static const struct device *entropy_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_entropy));
-static const struct device *flash_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_flash_controller));
 static struct nvs_fs fs;
 
 static void lockout_timer_expiry_cb(struct k_timer *timer)
@@ -50,17 +56,35 @@ void uds_security_init(void)
 
 	k_timer_init(&lockout_timer, lockout_timer_expiry_cb, NULL);
 
-	if (!device_is_ready(flash_dev)) return;
+	/* 1. Überprüfen, ob das Flash-Gerät der definierten storage_partition bereit ist */
+	if (!device_is_ready(STORAGE_PARTITION_DEVICE)) {
+		LOG_ERR("Flash-Device für storage_partition ist nicht bereit!");
+		return;
+	}
 
-	fs.flash_device = flash_dev;
-	ret = flash_get_page_info_by_idx(flash_dev, flash_get_page_count(flash_dev) - 1, &info);
+	fs.flash_device = STORAGE_PARTITION_DEVICE;
+	fs.offset = STORAGE_PARTITION_OFFSET;
+
+	/* 2. Sektorengröße der Flash-Page am Start-Offset der Partition ermitteln */
+	ret = flash_get_page_info_by_offs(fs.flash_device, fs.offset, &info);
 	if (ret == 0) {
-		fs.offset = info.start_offset;
 		fs.sector_size = info.size;
-		fs.sector_count = 1;
-	} else return;
+		/* 3. Sektoranzahl dynamisch aus der vollen Partitionsgröße berechnen */
+		fs.sector_count = STORAGE_PARTITION_SIZE / info.size;
+	} else {
+		LOG_ERR("Konnte Flash-Seiten-Info für Partition-Offset nicht lesen!");
+		return;
+	}
 
-	if (nvs_mount(&fs) != 0) return;
+	if (fs.sector_count == 0) {
+		LOG_ERR("storage_partition ist kleiner als die minimale Flash-Page-Größe!");
+		return;
+	}
+
+	if (nvs_mount(&fs) != 0) {
+		LOG_ERR("NVS Dateisystem Mount fehlgeschlagen!");
+		return;
+	}
 
 	uint8_t stored_lockout = 0;
 	ret = nvs_read(&fs, NVS_LOCKOUT_STATE_ID, &stored_lockout, sizeof(stored_lockout));
