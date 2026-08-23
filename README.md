@@ -52,22 +52,6 @@ Der Treiber deklariert folgende Funktionen als `__weak` Fallbacks mit vordefinie
 
 Für die Validierung der Protokoll-Engine gegen echte Hardware befindet sich im Projekt eine interaktive Python-Testsuite auf Basis von **PyQt5**, **python-can** und **can-isotp**. Diese erlaubt es, alle implementierten ISO 14229-1 Dienste (inklusive automatisierter Seed/Key-Berechnung und vollständigem Firmware-Streaming) per Knopfdruck an einem realen CAN-Bus zu testen.
 
-### 🔌 Hardware-Inbetriebnahme (z. B. USB-zu-CAN-Umsetzer an /dev/ttyACM2)
-
-Wenn ein USB-zu-CAN-Wandler mit slcan-Firmware verwendet wird, muss dieser vor dem Start des Skripts mit einer Baudrate von **500 kBit/s** in den Linux-Netzwerk-Stack eingebunden werden:
-
-```bash
-# 1. System-Werkzeuge für CAN installieren & Treiber laden
-sudo apt update && sudo apt install -y can-utils
-sudo modprobe can can_raw slcan
-
-# 2. Seriellen Wandler an das SocketCAN-Interface 'slcan0' binden
-sudo slcand -o -c -s6 /dev/ttyACM2 slcan0
-
-# 3. Das Netzwerkinterface im System hochfahren
-sudo ip link set slcan0 up
-```
-
 ### 📦 Python-Abhängigkeiten installieren
 
 Installiere die für die grafische Oberfläche und die Netzwerschicht erforderlichen Python-Pakete (ggf. mit `--break-system-packages` ergänzen, falls deine Linux-Distribution dies vorgibt):
@@ -80,7 +64,7 @@ pip install python-can can-isotp PyQt5
 
 Speichere das bereitgestellte Skript als `uds_hardware_tester.py` ab. Stelle sicher, dass im Initialisierungs-Block der Schnittstellenname exakt als String übergeben wird:
 ```python
-interface_name = 'slcan0'
+interface_name = 'can0'
 can_bus = can.interface.Bus(interface='socketcan', channel=interface_name, bitrate=500000)
 isotp_socket = isotp.socket()
 isotp_socket.bind(interface_name, tp_address)
