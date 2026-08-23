@@ -2,18 +2,20 @@
 # -*- coding: utf-8 -*-
 
 import sys
+import time
 from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QTextEdit, QGroupBox, QFileDialog, QLabel)
 from PyQt5.QtCore import Qt
 
 class UdsGui(QWidget):
-    def __init__(self, worker=None, engine=None):
+    def __init__(self, socket=None):
         """
         Grafische Test-Oberfläche für die Verifikation des Zephyr UDS-Servers.
+        Arbeitet rein hardwarebasiert ohne lokale Simulation.
         """
         super().__init__()
-        self.worker = worker
-        self.engine = engine
+        self.socket = socket
+        self.gui_block_sequence_counter = 1  # Lokaler Zähler für Service 0x36
         self.init_ui()
 
     def init_ui(self):
@@ -36,7 +38,7 @@ class UdsGui(QWidget):
         self.btn_ext_sess.clicked.connect(lambda: self.send_raw_request(bytes([0x10, 0x03])))
 
         self.btn_req_seed = QPushButton("Request Seed (0x27)")
-        self.btn_req_seed.clicked.connect(self.action_request_seed)
+        self.btn_req_seed.clicked.connect(lambda: self.send_raw_request(bytes([0x27, 0x01])))
 
         self.btn_ecu_reset = QPushButton("ECU Reset (0x11)")
         self.btn_ecu_reset.clicked.connect(lambda: self.send_raw_request(bytes([0x11, 0x01])))
@@ -118,10 +120,10 @@ class UdsGui(QWidget):
     def log(self, text):
         """Hängt Text an den Logbereich an."""
         self.log_area.append(text)
-
     def send_raw_request(self, payload):
-        """Sendet Daten direkt an die Engine und gibt detaillierte Erklärungen im Log aus."""
-        if not payload:
+        """Sendet Daten direkt an das ISO-TP-Socket und übersetzt das TX-Protokoll im Log."""
+        if not payload or not self.socket:
+            self.log("[Fehler] Kein aktives CAN/ISO-TP-Interface vorhanden!")
             return
 
         sid = payload[0]
@@ -159,23 +161,21 @@ class UdsGui(QWidget):
         elif sid == 0x37:
             explanation = "RequestTransferExit -> Firmware-Übertragung beenden (Abschlussbefehl)"
 
-        self.log(f"[TX] {payload.hex().upper()} ({explanation})")
+        self.log(f"[TX ISO-TP] {payload.hex().upper()} ({explanation})")
+        
+        try:
+            # Physikalisch auf die CAN-Leitung ausgeben
+            self.socket.send(payload)
+        except Exception as e:
+            self.log(f"[ISO-TP Fehler] Senden fehlgeschlagen: {e}")
 
-        # Setze einen sauberen, einfachen Empfangs-Logger auf die Engine auf
-        if self.engine:
-            self.engine.send_callback = self.gui_receive_logger
-            self.engine.process_rx_frame(payload)
     def gui_receive_logger(self, tx_data):
-        """Zentraler Empfangs-Logger. Verarbeitet Antworten ohne Multiplikations-Effekt."""
+        """Zentraler Empfangs-Logger für eintreffende Hardware-Antworten."""
         if not tx_data:
             return
         
         resp_sid = tx_data[0]
         resp_explain = "Unbekannte Antwort"
-        
-        # Versuche die ursprüngliche Sende-ID zu rekonstruieren
-        # Bei einer positiven Antwort ist die ursprüngliche ID immer (Antwort-ID - 0x40)
-        original_sid = resp_sid - 0x40 if resp_sid != 0x7F else (tx_data[1] if len(tx_data) > 1 else 0)
         
         # --- ISO 14229-1 Dienst-Übersetzer für eingehende Antworten (RX) ---
         if resp_sid == 0x7F:
@@ -187,9 +187,11 @@ class UdsGui(QWidget):
                 0x11: "ServiceNotSupported (Dienst nicht unterstützt)",
                 0x12: "SubFunctionNotSupported (Unterfunktion nicht unterstützt)",
                 0x13: "IncorrectMessageLengthOrInvalidFormat (Falsche Payload-Länge)",
+                0x22: "ConditionsNotCorrect (Befehl in dieser Session blockiert)",
                 0x24: "RequestSequenceError (Falsche Reihenfolge der Befehle)",
                 0x31: "RequestOutOfRange (Daten-ID / DID nicht gefunden)",
                 0x35: "InvalidKey (Sicherheitsschlüssel mathematisch falsch)",
+                0x36: "ExceededNumberOfAttempts (Anti-Brute-Force Sperre aktiv)",
                 0x73: "WrongBlockSequenceCounter (Falscher Blockzähler beim Flashen)",
                 0x7E: "SubFunctionNotSupportedInActiveSession (In dieser Session gesperrt)"
             }
@@ -197,7 +199,8 @@ class UdsGui(QWidget):
             resp_explain = f"NRC (Negative Response) für Dienst {failed_sid}: {nrc_text}"
         
         else:
-            # Positive Response (Erfolgsfall)
+            # Positive Response (Erfolgsfall: Antwort-SID ist immer Anfrage-SID + 0x40)
+            original_sid = resp_sid - 0x40
             if original_sid == 0x10:
                 resp_explain = "Erfolg: Sitzungswechsel vom Steuergerät bestätigt"
             elif original_sid == 0x11:
@@ -210,7 +213,15 @@ class UdsGui(QWidget):
                 resp_explain = f"Erfolg: Daten für DID gelesen -> Wert: {tx_data[3:].hex().upper()}"
             elif original_sid == 0x27:
                 sub = tx_data[1] if len(tx_data) > 1 else 0
-                resp_explain = f"Erfolg: Seed erhalten -> {tx_data[2:].hex().upper()}" if sub == 0x01 else "Erfolg: ECU entsperrt (Security Access granted)"
+                if sub == 0x01:
+                    seed_bytes = tx_data[2:]
+                    resp_explain = f"Erfolg: Seed erhalten -> {seed_bytes.hex().upper()}"
+                    # Automatisierter Handshake: Berechne den Key direkt via XOR 0xFF und schicke ihn ab
+                    computed_key = bytes([b ^ 0xFF for b in seed_bytes])
+                    self.log(f"[INFO] Berechne Key via XOR 0xFF -> {computed_key.hex().upper()}")
+                    self.send_raw_request(bytes([0x27, 0x02]) + computed_key)
+                else:
+                    resp_explain = "Erfolg: ECU entsperrt (Security Access granted)"
             elif original_sid == 0x2E:
                 resp_explain = "Erfolg: Daten erfolgreich auf DID geschrieben"
             elif original_sid == 0x2F:
@@ -225,27 +236,9 @@ class UdsGui(QWidget):
             elif original_sid == 0x37:
                 resp_explain = "Erfolg: Flash-Pipeline geschlossen, Firmware-Update beendet"
 
-        self.log(f"[RX] {tx_data.hex().upper()} ({resp_explain})\n")
-        
-        # Falls die GUI im echten Netzwerkbetrieb (mit Worker) läuft, leiten wir Daten an das Interface weiter
-        if self.worker and hasattr(self.worker, 'secure_send_callback'):
-            self.worker.secure_send_callback(tx_data)
-
-
-
-    def action_request_seed(self):
-        """Führt eine automatisierte Seed-Anforderung durch."""
-        self.log("[INFO] Starte automatisierten Sicherheits-Handshake...")
-        self.send_raw_request(bytes([0x27, 0x01]))
-        
-        if self.engine and hasattr(self.engine, 'generated_seed') and self.engine.generated_seed:
-            seed = self.engine.generated_seed
-            computed_key = bytes([b ^ 0xFF for b in seed])
-            self.log(f"[INFO] Algorithmus angewendet: Key = Seed XOR 0xFF")
-            self.send_raw_request(bytes([0x27, 0x02]) + computed_key)
-
+        self.log(f"[RX ISO-TP] {tx_data.hex().upper()} ({resp_explain})\n")
     def action_automate_flash_pipeline(self):
-        """Öffnet eine Datei und streamt sie vollautomatisiert durch die Flash-Pipeline."""
+        """Öffnet eine Datei und streamt sie vollautomatisiert über ISO-TP an das Steuergerät."""
         file_path, _ = QFileDialog.getOpenFileName(self, "Firmware-Binary öffnen", "", "Binary Files (*.bin);;All Files (*)")
         if not file_path:
             return
@@ -258,54 +251,53 @@ class UdsGui(QWidget):
             self.lbl_flash_status.setText(f"Datei geladen: {total_bytes} Bytes. Flashing läuft...")
             self.log(f"[Flash] Pipeline gestartet für '{file_path}' ({total_bytes} Bytes)")
 
-            # Schritt 1: Request Download (0x34)
+            # Schritt 1: Request Download (0x34) an die echte Hardware funken
             self.log("[Flash Step 1] Sende Request Download (0x34)...")
             self.send_raw_request(bytes([0x34, 0x00, 0x44, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00]))
-
-            if self.engine and self.engine.flash_state != 1:
-                self.log("[Flash Error] Download vom Server abgewiesen (Möglicherweise falsche Session?).")
-                self.lbl_flash_status.setText("Flash-Vorgang fehlgeschlagen.")
-                return
+            
+            # Kurze Pause für den Bus
+            time.sleep(0.1)
 
             # Schritt 2: Transfer Data blockweise senden (0x36)
             block_size = 256
             self.log(f"[Flash Step 2] Streamen der Daten in {block_size}-Byte Blöcken...")
             
+            self.gui_block_sequence_counter = 1
             for i in range(0, total_bytes, block_size):
                 chunk = bin_data[i:i+block_size]
-                bsc = self.engine.block_sequence_counter if self.engine else 1
-                payload = bytes([0x36, bsc]) + chunk
+                payload = bytes([0x36, self.gui_block_sequence_counter]) + chunk
                 self.send_raw_request(payload)
+                
+                # Erhöhe den Zähler rollierend im Wertebereich 1-255 nach ISO-Standard
+                self.gui_block_sequence_counter = (self.gui_block_sequence_counter + 1) if self.gui_block_sequence_counter < 255 else 1
+                time.sleep(0.01) # Schreibpause für den Flash-Speicher des Zephyr-Knotens
 
             # Schritt 3: Request Transfer Exit (0x37)
             self.log("[Flash Step 3] Schließe Übertragung mit Request Transfer Exit (0x37)...")
             self.send_raw_request(bytes([0x37]))
-
-            self.lbl_flash_status.setText("Flash-Vorgang erfolgreich beendet.")
-            self.log("[Flash Success] Pipeline-Zustand erfolgreich zurückgesetzt.")
+            self.lbl_flash_status.setText("Flash-Vorgang abgeschlossen.")
 
         except Exception as e:
             self.log(f"[Flash Exception] Kritischer Fehler beim Flashen: {e}")
             self.lbl_flash_status.setText("Fehler beim Datei-Streaming.")
 
-        except Exception as e:
-            self.log(f"[System Error] Allgemeiner Dateizugriffsfehler: {e}")
-            self.lbl_flash_status.setText("Datei konnte nicht gelesen werden.")
-
 
 # ==============================================================================
-# HAUPT-EINSTIEGSPUNKT
+# ISO-TP HARDWARE APP RUNNER (Isolierter Direktstart-Fallback)
 # ==============================================================================
 if __name__ == "__main__":
-    from uds_engine import UdsEngine
-
+    import isotp
+    print("[Direktstart] Initialisiere Hardware-Modus auf Standard-Interface 'can0'...")
+    
     app = QApplication(sys.argv)
-    
-    # Protokoll-Instanzen erzeugen
-    sim_engine = UdsEngine()
-    
-    # GUI erzeugen und Instanzen übergeben
-    gui = UdsGui(worker=None, engine=sim_engine)
-    gui.show()
-    
-    sys.exit(app.exec_())
+    socket = isotp.socket(timeout=1.0)
+    try:
+        socket.set_opts(txpad=0xAA, rxpad=0xAA)
+        socket.set_fc_opts(bs=0, stmin=0)
+        socket.bind("can0", isotp.Address(rxid=0x7E8, txid=0x7E0))
+        
+        gui = UdsGui(socket=socket)
+        gui.show()
+        sys.exit(app.exec_())
+    except Exception as e:
+        print(f"[Fatal] Interface 'can0' blockiert oder nicht vorhanden: {e}")

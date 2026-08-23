@@ -6,71 +6,86 @@ import time
 import threading
 import isotp
 from PyQt5.QtWidgets import QApplication
-from uds_engine import UdsEngine
 from uds_gui import UdsGui
 
 def main():
+    # Initialisiere das PyQt5 Anwendungs-Framework
     app = QApplication(sys.argv)
     
-    # 1. Protokoll-Engine instanziieren
-    engine = UdsEngine()
-    
-    # 2. CAN-Device aus den Argumenten auslesen (Standard: 'can0')
+    # 1. CAN-Device aus den Argumenten auslesen (Standard: 'can0')
+    # Erlaubt den Aufruf via 'python3 main.py vcan0' oder 'python3 main.py can1'
     if len(sys.argv) > 1:
-        can_channel = sys.argv[1]  # <--- KORREKTUR HIER
+        can_channel = sys.argv[1]
     else:
         can_channel = "can0"
         
-    print(f"[Hardware-Start] Aktiviere ISO-TP Socket auf: '{can_channel}'")
+    print(f"[UDS-Tester] Dedizierter Hardware-Modus aktiv auf Interface: '{can_channel}'")
     
-    # 3. GUI erzeugen
-    gui = UdsGui(worker=None, engine=engine)
-    
-    # 4. Echtes ISO-TP Socket konfigurieren und öffnen
-    socket = isotp.socket(timeout=2.0)
+    # 2. Erzeuge das native ISO-TP Socket
+    # Das Timeout von 1.0 Sekunde sichert ab, dass das Socket bei Verbindungsabbrüchen nicht einfriert
+    socket = isotp.socket(timeout=1.0)
     
     try:
+        # txpad und rxpad zwingen das Linux-Kernelmodul auf feste 8-Byte DLC-Längen.
+        # Das ist zwingend erforderlich, um DLC-Validierungsfehler im Zephyr RTOS zu verhindern.
         socket.set_opts(txpad=0xAA, rxpad=0xAA)
-        socket.bind(can_channel, isotp.Address(rxid=0x7E8, txid=0x7E0))
+        
+        # PROTOKOLL-WORKAROUND FÜR MULTI-FRAME-TIMEOUTS:
+        # bs=0    -> Block Size 0 (Teilt der ECU mit: "Sende alle Consecutive Frames ohne Unterbrechung")
+        # stmin=0 -> Separation Time 0 (Fordert minimale Trennzeit von 0ms zwischen den Rahmen an)
+        socket.set_fc_opts(bs=0, stmin=0)
+        
+        # KORREKTE UDS-ADRESSIERUNG NACH ISO 15765-2:
+        # rxid: Die ID, auf der der PC (Python) Antworten der ECU erwartet -> 0x7E8
+        # txid: Die ID, auf der der PC (Python) Anfragen an die ECU sendet -> 0x7E0
+        addr = isotp.Address(rxid=0x7E8, txid=0x7E0)
+        
+        # Binde das Socket an das gewählte CAN-Interface
+        socket.bind(can_channel, addr)
+        print("[System] ISO-TP Socket erfolgreich konfiguriert und an Kernel gebunden.")
     except Exception as e:
-        print(f"[Socket Error] Konnte ISO-TP Socket auf {can_channel} nicht öffnen: {e}")
-        print("Hinweis: Stelle sicher, dass das Interface aktiv ist (z.B. sudo ip link set up can0)")
+        print(f"[Socket Fatal] Bindung oder Konfiguration fehlgeschlagen: {e}")
+        print("Hinweis: Stelle sicher, dass das CAN-Interface aktiv ist (z.B. sudo ip link set up can0)")
         sys.exit(1)
 
+    # 3. GUI erzeugen und das scharfgeschaltete Socket übergeben
+    # Da wir rein hardwarebasiert arbeiten, entfällt der Simulations-Parameter (Engine) vollständig.
+    gui = UdsGui(socket=socket)
+    
     # ==============================================================================
-    # HARDWARE-BRÜCKE: GUI-Klicks über das ISO-TP Socket senden
-    # ==============================================================================
-    def hardware_isotp_send(payload):
-        """Sendet UDS-Payloads normkonform über die ISO-TP Schicht."""
-        try:
-            socket.send(payload)
-            gui.log(f"[TX ISO-TP] {payload.hex().upper()}")
-        except Exception as e:
-            gui.log(f"[ISO-TP Fehler] Senden fehlgeschlagen: {e}")
-
-    # Die Simulations-Sende-Methode der GUI mit der echten ISO-TP-Schnittstelle verknüpfen
-    gui.send_raw_request = hardware_isotp_send
-
-    # ==============================================================================
-    # EMPFANGS-THREAD: Höre auf Antworten des Zephyr-Steuergeräts
+    # ASYNCHRONER NETZWERK-EMPFANGSTHREAD
     # ==============================================================================
     def rx_thread_loop():
+        # Schalte den nicht-blockierenden Modus über das native OS-Socket scharf
+        if hasattr(socket, '_socket'):
+            socket._socket.setblocking(False)
+        
         while True:
             try:
+                # Versuche, ein vollständig zusammengesetztes UDS-Paket aus dem Kernel-Puffer zu lesen
                 rx_data = socket.recv()
                 if rx_data:
+                    # Leite das fertige Multi-Frame-Paket an den Klartext-Logger der GUI weiter
                     gui.gui_receive_logger(bytes(rx_data))
+            except (BlockingIOError, OSError):
+                # KORREKTUR: Fängt Errno 11 (Resource temporarily unavailable) sauber ab.
+                # Keine Daten im Puffer vorhanden -> Kurz schlafen, um CPU-Last auf 0% zu halten.
+                time.sleep(0.005)
             except Exception as e:
+                print(f"[Rx Thread Error] {e}")
                 time.sleep(0.01)
 
+
+    # Starte den Empfangsthread als Daemon, damit er beim Schließen der GUI automatisch beendet wird
     rx_thread = threading.Thread(target=rx_thread_loop)
     rx_thread.daemon = True
     rx_thread.start()
 
-    # 5. GUI anzeigen und App-Schleife ausführen
+    # 4. GUI-Fenster anzeigen und die Qt-Ereignisschleife starten
     gui.show()
     exit_code = app.exec_()
     
+    # Ressourcen beim Schließen der Anwendung sauber freigeben
     socket.close()
     sys.exit(exit_code)
 
