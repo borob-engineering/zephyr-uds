@@ -13,24 +13,21 @@ from PyQt5.QtGui import QFont, QTextCursor, QColor
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
 
 # ==============================================================================
-# CAN & ISO-TP HARDWARE NETZWERKSCHICHT (STR-PROMPT FIX)
+# CAN & ISO-TP HARDWARE NETZWERKSCHICHT (TIMEOUT-FIX GEGEN ENDLOSSCHLEIFE)
 # ==============================================================================
 try:
-    # 1. Namen des Interfaces festlegen
     interface_name = 'slcan0'
-    
-    # 2. CAN-Bus Interface für Hintergrund-Prozesse öffnen
-    can_bus = can.interface.Bus(interface= 'socketcan', channel=interface_name, bitrate=500000)
-    
-    # 3. ISO-TP Adressierung definieren (TX: 0x7E0, RX: 0x7E8)
+    can_bus = can.interface.Bus(interface='socketcan', channel=interface_name, bitrate=500000)
     tp_address = isotp.Address(rxid=0x7E8, txid=0x7E0)
     
-    # 4. ISO-TP Socket instanziieren
+    # 1. Socket ohne Parameter erstellen
     isotp_socket = isotp.socket()
     
-    # FIX: Hier MUSS der String ('slcan0') übergeben werden, NICHT das Bus-Objekt!
-    isotp_socket.bind(interface_name, tp_address)
+    # 2. Kernel-Level Timeout auf 1.0 Sekunde setzen (Löst das Blockieren)
+    isotp_socket.settimeout(1.0)
     
+    # 3. An das slcan0-Interface binden
+    isotp_socket.bind(interface_name, tp_address)
     HARDWARE_AVAILABLE = True
 except Exception as e:
     print(f"WARNUNG: CAN-Hardware konnte nicht initialisiert werden ({e}).")
@@ -58,7 +55,7 @@ class FlashWorker(QThread):
         isotp_socket.send(tx)
         
         try:
-            rx = isotp_socket.recv(timeout=1.0)
+            rx = isotp_socket.recv()
             if not rx or rx[0] != 0x50:
                 self.log_sig.emit(f"Flash-Abbruch: Sessionwechsel verweigert! RX: {rx.hex().upper() if rx else 'None'}", "err")
                 return
@@ -75,7 +72,7 @@ class FlashWorker(QThread):
         isotp_socket.send(tx)
         
         try:
-            rx = isotp_socket.recv(timeout=1.0)
+            rx = isotp_socket.recv()
             if not rx or rx[0] != 0x74:
                 self.log_sig.emit(f"Flash-Abbruch: Download-Anfrage verweigert! RX: {rx.hex().upper() if rx else 'None'}", "err")
                 return
@@ -94,7 +91,7 @@ class FlashWorker(QThread):
             isotp_socket.send(tx)
             
             try:
-                rx = isotp_socket.recv(timeout=2.0) # Höheres Timeout für Flash-Schreibvorgang
+                rx = isotp_socket.recv() # Höheres Timeout für Flash-Schreibvorgang
                 if not rx or rx[0] != 0x66:
                     self.log_sig.emit(f"Flash-Abbruch: Fehler bei Block {bsc}! RX: {rx.hex().upper() if rx else 'None'}", "err")
                     return
@@ -110,7 +107,7 @@ class FlashWorker(QThread):
         isotp_socket.send(tx)
         
         try:
-            rx = isotp_socket.recv(timeout=1.0)
+            rx = isotp_socket.recv()
             if not rx or rx[0] != 0x77:
                 self.log_sig.emit("Flash-Abbruch: Exit vom Steuergerät nicht quittiert!", "err")
                 return
@@ -261,12 +258,17 @@ class ZephyrUDSHardwareTester(QMainWindow):
             return None
 
         self.log_message(f"TX (CAN): {tx_bytes.hex().upper()}", "tx")
-        isotp_socket.send(tx_bytes)
         
         try:
-            rx_bytes = isotp_socket.recv(timeout=1.5)
+            isotp_socket.send(tx_bytes)
+        except Exception as e:
+            self.log_message(f"TX-Fehler (Bus down / No ACK?): {e}", "err")
+            return None
+        
+        try:
+            # Versuche Daten zu empfangen - blockiert maximal 1 Sekunde
+            rx_bytes = isotp_socket.recv()
             
-            # Auswertung: Ist es eine negative Antwort (NRC)?
             if rx_bytes and rx_bytes[0] == 0x7F:
                 nrc_id = f"{rx_bytes[2]:02X}" if len(rx_bytes) > 2 else "??"
                 self.log_message(f"RX (CAN): {rx_bytes.hex().upper()} -> NEGATIVE RESPONSE (NRC 0x{nrc_id})", "err")
@@ -274,9 +276,12 @@ class ZephyrUDSHardwareTester(QMainWindow):
                 self.log_message(f"RX (CAN): {rx_bytes.hex().upper()} -> POSITIVE RESPONSE", "rx")
                 self.evaluate_ecu_state(tx_bytes, rx_bytes)
             return rx_bytes
-        except TimeoutError:
+            
+        except (TimeoutError, OSError) as e:
+            # Greift sofort, wenn nach 1 Sekunde kein CAN-Knoten geantwortet hat
             self.log_message("RX (CAN): FEHLER - Keine Antwort vom Zephyr-Knoten erhalten (Timeout)!", "err")
             return None
+
 
     def handle_security_seed_request(self):
         # 1. Seed anfordern

@@ -192,6 +192,11 @@ int uds_init(void)
 {
 	if (!device_is_ready(can_dev)) return -ENODEV;
 
+	int ret = can_start(can_dev);
+	if (ret != 0) {
+		printk("Fehler beim Starten des CAN-Controllers: %d\n", ret);
+	}
+
 	uds_session_init();
 	uds_security_init();
 	uds_routine_init();
