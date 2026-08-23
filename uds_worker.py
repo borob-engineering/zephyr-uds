@@ -1,43 +1,65 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import threading
 import time
-from PyQt5.QtCore import QThread, pyqtSignal
-from uds_engine import UDSEngine
+import can
 
-class UDSWorker(QThread):
-    """Führt UDS-Befehle asynchron aus, um das Einfrieren der GUI zu verhindern."""
-    response_received = pyqtSignal(str, str)  # Richtung (TX/RX/SYS), Payload/Nachricht
-    error_occurred = pyqtSignal(str)
-
-    def __init__(self, engine: UDSEngine, task_type: str, params: dict):
+class UdsWorker(threading.Thread):
+    def __init__(self, interface='socketcan', channel='can0', bitrate=500000, engine=None):
+        """
+        Worker-Thread zur blockierungsfreien CAN/ISO-TP-Datenverarbeitung.
+        """
         super().__init__()
+        self.interface = interface
+        self.channel = channel
+        self.bitrate = bitrate
         self.engine = engine
-        self.task_type = task_type
-        self.params = params
+        self.running = True
+        self.bus = None
+
+        try:
+            # Verbindung zum CAN-Interface herstellen
+            self.bus = can.interface.Bus(interface=self.interface, channel=self.channel, bitrate=self.bitrate)
+        except Exception as e:
+            print(f"[Worker Error] CAN-Bus-Initialisierung fehlgeschlagen: {e}")
 
     def run(self):
-        try:
-            if self.task_type == "connect":
-                self.engine.connect()
-                self.response_received.emit("SYS", "Erfolgreich mit ISO-TP Socket verbunden.")
-            
-            elif self.task_type == "session":
-                sess_id = self.params.get("session_id", 0x01)
-                self.response_received.emit("TX", f"10 {sess_id:02X}")
-                resp = self.engine.change_session(sess_id)
-                self.response_received.emit("RX", resp.hex(' ').upper() if resp else "KEINE ANTWORT")
+        print(f"[Worker] Höre auf USB-Interface '{self.channel}'...")
+        while self.running:
+            if self.bus is None:
+                time.sleep(0.1)
+                continue
 
-            elif self.task_type == "read_did":
-                did = self.params.get("did", 0x0000)
-                self.response_received.emit("TX", f"22 {did:04X}")
-                resp = self.engine.read_did(did)
-                self.response_received.emit("RX", resp.hex(' ').upper() if resp else "KEINE ANTWORT")
+            try:
+                msg = self.bus.recv(timeout=0.1)
+                if msg is None:
+                    continue
 
-            elif self.task_type == "write_did":
-                did = self.params.get("did", 0x0000)
-                data = self.params.get("data", [])
-                data_str = " ".join(f"{x:02X}" for x in data)
-                self.response_received.emit("TX", f"2E {did:04X} {data_str}")
-                resp = self.engine.write_did(did, data)
-                self.response_received.emit("RX", resp.hex(' ').upper() if resp else "KEINE ANTWORT")
-                
-        except Exception as e:
-            self.error_occurred.emit(str(e))
+                # Wenn die ECU antwortet (0x7E8 = Steuergeräte-Antwort ID)
+                if msg.arbitration_id == 0x7E8:
+                    # Konvertiere die CAN-Rohdaten zurück in ein kompaktes bytes-Objekt
+                    rx_bytes = bytes(msg.data)
+                    
+                    # Wenn eine GUI an den Worker gekoppelt ist, triggere deren Logger
+                    # (Wir prüfen dynamisch, ob die Applikation läuft)
+                    if hasattr(self, 'gui_instance') and self.gui_instance:
+                        self.gui_instance.gui_receive_logger(rx_bytes)
+                    else:
+                        # Fallback: Falls keine GUI offen ist, verarbeite es in der Engine
+                        if self.engine:
+                            self.engine.process_rx_frame(rx_bytes)
+
+            except Exception as e:
+                print(f"[Worker Exception] CAN-Fehler: {e}")
+
+
+    def stop(self):
+        """Stoppt die Netzwerkschleife sauber."""
+        self.running = False
+        if self.bus:
+            try:
+                self.bus.shutdown()
+            except:
+                pass
+        print("[Worker] Thread gestoppt.")
