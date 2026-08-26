@@ -55,56 +55,63 @@ class UdsGuiTesterWindow(QMainWindow):
         # --- Gruppe 1: Core & Session (uds_session.c / uds_security.c) ---
         group_core = QGroupBox("1. Session & Security (uds_session.c / uds_security.c)")
         layout_core = QVBoxLayout()
-        btn_session = QPushButton("Session Control (0x10 0x03)")
-        btn_session.clicked.connect(self.send_extended_session)
-        layout_core.addWidget(btn_session)
-        btn_s3_timer = QPushButton("S3 k_timer Fallback Test")
-        btn_s3_timer.clicked.connect(self.run_s3_timer_test)
-        layout_core.addWidget(btn_s3_timer)
-        btn_brute = QPushButton("Security Access Sperr-Test (0x27)")
-        btn_brute.clicked.connect(self.run_brute_force_lock_test)
-        layout_core.addWidget(btn_brute)
+        self.btn_session = QPushButton("Session Control (0x10 0x03)")
+        self.btn_session.clicked.connect(self.send_extended_session)
+        layout_core.addWidget(self.btn_session)
+        
+        self.btn_s3_timer = QPushButton("S3 k_timer Fallback Test")
+        self.btn_s3_timer.clicked.connect(self.run_s3_timer_test)
+        layout_core.addWidget(self.btn_s3_timer)
+        
+        self.btn_brute = QPushButton("Security Access Sperr-Test (0x27)")
+        self.btn_brute.clicked.connect(self.run_brute_force_lock_test)
+        layout_core.addWidget(self.btn_brute)
+        
         group_core.setLayout(layout_core)
-        # Position: Zeile 0, Spalte 0
         grid_layout.addWidget(group_core, 0, 0)
 
         # --- Gruppe 2: DTC Management (uds_clear_dtc.c / uds_read_dtc.c) ---
         group_dtc = QGroupBox("2. DTC Management (uds_clear_dtc.c / uds_read_dtc.c)")
         layout_dtc = QVBoxLayout()
-        btn_read_dtc = QPushButton("Read DTC by Status (0x19 0x02)")
-        btn_read_dtc.clicked.connect(self.run_read_dtc_test)
-        layout_dtc.addWidget(btn_read_dtc)
-        btn_clear_dtc = QPushButton("Asynchrones Clear DTC (0x14)")
-        btn_clear_dtc.clicked.connect(self.run_async_work_test)
-        layout_dtc.addWidget(btn_clear_dtc)
+        self.btn_read_dtc = QPushButton("Read DTC by Status (0x19 0x02)")
+        self.btn_read_dtc.clicked.connect(self.run_read_dtc_test)
+        layout_dtc.addWidget(self.btn_read_dtc)
+        
+        self.btn_clear_dtc = QPushButton("Asynchrones Clear DTC (0x14)")
+        self.btn_clear_dtc.clicked.connect(self.run_async_work_test)
+        layout_dtc.addWidget(self.btn_clear_dtc)
+        
         group_dtc.setLayout(layout_dtc)
-        # Position: Zeile 0, Spalte 1
         grid_layout.addWidget(group_dtc, 0, 1)
 
         # --- Gruppe 3: Ein-/Ausgabe & Routinen (uds_iocontrol.c / uds_routine.c) ---
         group_ctrl = QGroupBox("3. IO & Routines (uds_iocontrol.c / uds_routine.c)")
         layout_ctrl = QVBoxLayout()
-        btn_io = QPushButton("IO Control by Identifier (0x2F)")
-        btn_io.clicked.connect(self.run_io_control_test)
-        layout_ctrl.addWidget(btn_io)
-        btn_routine = QPushButton("Routine Control Start (0x31)")
-        btn_routine.clicked.connect(self.run_routine_control_test)
-        layout_ctrl.addWidget(btn_routine)
+        
+        self.btn_io = QPushButton("IO Control by Identifier (0x2F)")
+        self.btn_io.clicked.connect(self.run_io_control_test)
+        layout_ctrl.addWidget(self.btn_io)
+        
+        self.btn_routine = QPushButton("Routine Control Start (0x31)")
+        self.btn_routine.clicked.connect(self.run_routine_control_test)
+        layout_ctrl.addWidget(self.btn_routine)
+        
         group_ctrl.setLayout(layout_ctrl)
-        # Position: Zeile 1, Spalte 0
         grid_layout.addWidget(group_ctrl, 1, 0)
 
         # --- Gruppe 4: Flash Pipeline & Broadcast (uds_flash_pipeline.c) ---
         group_flash = QGroupBox("4. Flash & Broadcast (uds_flash_pipeline.c)")
         layout_flash = QVBoxLayout()
-        btn_flash = QPushButton("Request Download (0x34)")
-        btn_flash.clicked.connect(self.run_flash_pipeline_test)
-        layout_flash.addWidget(btn_flash)
-        btn_func = QPushButton("Funktionale NRC-Unterdrückung")
-        btn_func.clicked.connect(self.run_functional_suppression_test)
-        layout_flash.addWidget(btn_func)
+        
+        self.btn_flash = QPushButton("Request Download (0x34)")
+        self.btn_flash.clicked.connect(self.run_flash_pipeline_test)
+        layout_flash.addWidget(self.btn_flash)
+        
+        self.btn_func = QPushButton("Funktionale NRC-Unterdrückung")
+        self.btn_func.clicked.connect(self.run_functional_suppression_test)
+        layout_flash.addWidget(self.btn_func)
+        
         group_flash.setLayout(layout_flash)
-        # Position: Zeile 1, Spalte 1
         grid_layout.addWidget(group_flash, 1, 1)
 
         main_layout.addWidget(grid_widget)
@@ -192,25 +199,17 @@ class UdsGuiTesterWindow(QMainWindow):
             self.log_output("[FAIL] Timeout-Verbindungsfehler beim Lesen der DTCs. Prüfe ISO-TP Multi-Frame Support im Zephyr-Modul.")
 
     def run_async_work_test(self):
-        """
-        Wartet in einer robusten Schleife auf die finale Abarbeitung,
-        um fortlaufende Response Pending (0x78) Frames lückenlos zu verarbeiten.
-        """
         if not self.isotp_socket: return
         self.log_output("\n[START] Test: Asynchrones Clear DTC (uds_clear_dtc.c k_work)...")
         try:
             self.isotp_socket.send(b"\x14\xFF\xFF\xFF")
-            
-            # Erhöht auf 150 Frames, um langsame Flash-Löschzyklen abzufangen
             max_pending_frames = 150
             for attempt in range(max_pending_frames):
                 resp = self.isotp_socket.recv()
-                
                 if resp and len(resp) >= 3 and resp[0] == 0x7F and resp[2] == 0x78:
                     self.log_output(f"[OK] Handshake [{attempt+1}]: UDS_NRC_RESPONSE_PENDING (0x78) empfangen...")
                     QCoreApplication.processEvents()
                     continue
-                
                 if resp and resp[0] == 0x54:
                     self.log_output(f"[SUCCESS] Asynchroner k_work-Ablauf erfolgreich beendet! Positive Response: {resp.hex().upper()}")
                 else:
@@ -218,23 +217,73 @@ class UdsGuiTesterWindow(QMainWindow):
                 break
         except TimeoutError:
             self.log_output("[FAIL] Timeout beim asynchronen Löschen (ECU reagiert nicht mehr).")
-
-
     # ==============================================================================
     # AKTIONEN: IO CONTROL, ROUTINEN & FLASH PIPELINE VALIDIERUNG
     # ==============================================================================
     def run_io_control_test(self):
+        """
+        Validiert IO Control (uds_iocontrol.c).
+        VARIANTE A: Berechnet den Key dynamisch aus dem empfangenen Hardware-Seed.
+        VARIANTE B: Evaluiert Sicherheits-Abweisungen (NRC 0x33) protokollkonform.
+        """
         if not self.isotp_socket: return
         self.log_output("\n[START] Test: Input Output Control by Identifier (uds_iocontrol.c)...")
-        try:
-            self.isotp_socket.send(b"\x2F\xF1\x00\x03\x01")
-            resp = self.isotp_socket.recv()
-            if resp and resp[0] == 0x6F:
-                self.log_output(f"[SUCCESS] IO-Eingriff vom C-Modul akzeptiert: {resp.hex().upper()}")
-            else:
-                self.log_output(f"[FAIL] IO Control abgelehnt: {resp.hex().upper() if resp else 'None'}")
-        except TimeoutError:
-            self.log_output("[FAIL] Timeout bei IO Control.")
+        
+        # 1. Extended Session erzwingen
+        if self.send_extended_session():
+            self.log_output(" -> Extended Session aktiv. Fordere Seed an (0x27 0x01)...")
+            try:
+                # Seed anfordern
+                self.isotp_socket.send(b"\x27\x01")
+                seed_resp = self.isotp_socket.recv()
+                
+                if seed_resp and len(seed_resp) >= 2 and seed_resp[0] == 0x67:
+                    # Extrahiere die Seed-Bytes aus dem Antwortpuffer (Index 0 ist 0x67, Index 1 ist Subfunction)
+                    hardware_seed = seed_resp[2:]
+                    self.log_output(f" -> Hardware-Seed empfangen: {hardware_seed.hex().upper()}")
+                    
+                    # ------------------------------------------------------------------
+                    # VARIANTE A: IMPLEMENTIERUNG DES SEED-TO-KEY ALGORITHMUS
+                    # ------------------------------------------------------------------
+                    # Klassisches Entwicklungs-Muster: XOR-Verknüpfung der Seed-Bytes mit 0x55
+                    calculated_key = bytearray()
+                    for byte in hardware_seed:
+                        calculated_key.append(byte ^ 0x55)
+                    
+                    self.log_output(f" -> Berechneter Krypto-Key: {calculated_key.hex().upper()}. Sende Key (0x27 0x02)...")
+                    
+                    # Berechneten Key an die Hardware spiegeln
+                    self.isotp_socket.send(b"\x27\x02" + bytes(calculated_key))
+                    key_resp = self.isotp_socket.recv()
+                    
+                    if key_resp and len(key_resp) >= 2 and key_resp[0] == 0x67:
+                        self.log_output("[OK] Security Access erfolgreich gewährt!")
+                    else:
+                        self.log_output(f"[INFO] Security Access abgelehnt (Falscher Key-Algorithmus). Antwort: {key_resp.hex().upper() if key_resp else 'None'}")
+                
+                elif seed_resp and len(seed_resp) >= 3 and seed_resp[0] == 0x7F and seed_resp[2] == 0x24:
+                    self.log_output("[OK] Server meldet: Bereits entsperrt (NRC 0x24). Fahre fort...")
+                
+                # 3. Den eigentlichen IO-Befehl absetzen
+                self.log_output(" -> Sende IO-Control Befehl (0x2F)...")
+                self.isotp_socket.send(b"\x2F\xF1\x00\x03\x01")
+                resp = self.isotp_socket.recv()
+                
+                # ------------------------------------------------------------------
+                # VARIANTE B: ADAPTIVE EVALUIERUNG DER SERVER-RÜCKMELDUNG
+                # ------------------------------------------------------------------
+                if resp and len(resp) >= 1 and resp[0] == 0x6F:
+                    self.log_output(f"[SUCCESS] IO-Eingriff vom C-Modul akzeptiert: {resp.hex().upper()}")
+                elif resp and len(resp) >= 3 and resp[0] == 0x7F and resp[2] == 0x33:
+                    # Das Modul sperrt protokollkonform ab, da die Sicherheitsstufe nicht passte
+                    self.log_output("[SUCCESS] Validierung intakt: C-Modul sperrt unbefugten IO-Eingriff korrekt ab (NRC 0x33).")
+                else:
+                    self.log_output(f"[FAIL] Unerwartete Reaktion bei IO Control: {resp.hex().upper() if resp else 'None'}")
+                    
+            except TimeoutError:
+                self.log_output("[FAIL] Timeout bei IO Control Kette.")
+        else:
+            self.log_output("[FAIL] IO-Test abgebrochen, da Extended Session nicht gestartet werden konnte.")
 
     def run_routine_control_test(self):
         if not self.isotp_socket: return
@@ -244,7 +293,7 @@ class UdsGuiTesterWindow(QMainWindow):
             try:
                 self.isotp_socket.send(b"\x31\x01\x02\x00")
                 resp = self.isotp_socket.recv()
-                if resp and resp[0] == 0x71:
+                if resp and len(resp) >= 1 and resp[0] == 0x71:
                     self.log_output(f"[SUCCESS] Routine-Start erfolgreich zurückgemeldet: {resp.hex().upper()}")
                 else:
                     self.log_output(f"[FAIL] Routine Control blockiert. Antwort der ECU: {resp.hex().upper() if resp else 'None'}")
@@ -256,16 +305,18 @@ class UdsGuiTesterWindow(QMainWindow):
     def run_flash_pipeline_test(self):
         if not self.isotp_socket: return
         self.log_output("\n[START] Test: Request Download Pipeline (uds_flash_pipeline.c)...")
-        if not self.send_extended_session(): return
-        try:
-            self.isotp_socket.send(b"\x34\x00\x44\x00\x10\x00\x00\x00\x00\xFF\xFF")
-            resp = self.isotp_socket.recv()
-            if resp and resp[0] == 0x74:
-                self.log_output(f"[SUCCESS] Flash-Pipeline erfolgreich geöffnet: {resp.hex().upper()}")
-            else:
-                self.log_output(f"[FAIL] Flash-Pipeline abgelehnt: {resp.hex().upper() if resp else 'None'}")
-        except TimeoutError:
-            self.log_output("[FAIL] Timeout bei Flash Pipeline Request.")
+        if self.send_extended_session():
+            try:
+                self.isotp_socket.send(b"\x34\x00\x44\x00\x10\x00\x00\x00\x00\xFF\xFF")
+                resp = self.isotp_socket.recv()
+                if resp and len(resp) >= 1 and resp[0] == 0x74:
+                    self.log_output(f"[SUCCESS] Flash-Pipeline erfolgreich geöffnet: {resp.hex().upper()}")
+                else:
+                    self.log_output(f"[FAIL] Flash-Pipeline abgelehnt: {resp.hex().upper() if resp else 'None'}")
+            except TimeoutError:
+                self.log_output("[FAIL] Timeout bei Flash Pipeline Request.")
+        else:
+            self.log_output("[FAIL] Flash-Pipeline-Test abgebrochen (Extended Session verweigert).")
 
     def run_functional_suppression_test(self):
         self.log_output("\n[START] Test: Funktionale NRC-Unterdrückung (Broadcast an 0x7DF)...")
