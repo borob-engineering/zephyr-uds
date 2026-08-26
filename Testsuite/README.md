@@ -1,92 +1,73 @@
-# 🖥 UDS-ISO-TP Hardware Testsuite
+# Zephyr RTOS UDS Hardware Testsuite
 
-Diese intuitive, rein hardwarebasierte Python-Testsuite dient der vollständigen Protokoll- und Timing-Validierung des **Zephyr RTOS UDS-Servers** nach den Normen **ISO 14229-1 (UDS)** und **ISO 15765-2 (ISO-TP)**. 
+Dieses Verzeichnis enthält die PyQt5-basierte grafische Testoberfläche (`uds_gui.py`) zur automatisierten und manuellen Validierung des ISO 14229-1 konformen Zephyr RTOS UDS-Servers. Die Suite kommuniziert über native Linux SocketCAN-Schnittstellen und nutzt das ISO-TP-Protokoll (ISO 15765-2) für die Multi-Frame-Übertragung.
 
-Das System arbeitet zu 100 % asynchron über die native SocketCAN-Schnittstelle des Linux-Kernels und verzichtet vollständig auf künstliche RAM-Simulationen. Dadurch werden Multi-Frame-Übertragungen (z. B. DTC-Listen) und Timing-kritische Abläufe präzise und hardwarenah getestet.
+## 📊 Abgedeckte Testmatrix & C-Module
 
----
+Die GUI bietet eine vollständige Testabdeckung für die im C-Core implementierten Fahrzeugdiagnose-Dienste:
 
-## 🛠 Architektur & Komponenten
-
-Das Tool ist modular aufgebaut und besteht aus zwei zentralen Dateien:
-
-1. **`main.py` (Hardware-Starter & Netzwerk-Core)**
-   * Bindet und konfiguriert das native `can-isotp` Socket des Linux-Kernels.
-   * Erzwingt festes Tx/Rx-Padding (`0xAA`) für konforme 8-Byte DLC-Längen, um Filter-Fehler im Zephyr-Knoten zu vermeiden.
-   * Setzt Flusssteuerungs-Parameter (`bs=0`, `stmin=0`), um Multi-Frame-Timeouts bei großen Datenmengen zu verhindern.
-   * Betreibt einen autarken, nicht-blockierenden Empgfangsthread (`BlockingIOError`-geschützt) für 0% CPU-Last im Ruhezustand.
-
-2. **`uds_gui.py` (PyQt5 Bedienoberfläche & Protokoll-Übersetzer)**
-   * Visuelle Steuerung aller implementierten ISO 14229-1 Dienste per Knopfdruck.
-   * **Live-Übersetzer (DBC-unabhängig):** Decodiert ausgehende Hex-Requests (TX) und eintreffende Steuergeräte-Antworten (RX) sowie Fehlercodes (NRCs) direkt im Logfenster in verständlichen Klartext.
-   * Integrierte automatisierte Abläufe: Seed/Key-Krypto-Handshake (XOR 0xFF) und blockweise segmentiertes Datei-Streaming (256-Byte Chunks) für die Flash-Pipeline.
-   * Rechtsbündiger Button zum sofortigen Leeren des Log-Verlaufs.
+| UDS Dienst | Bezeichnung | Ziel-Modul im Core | Validierter Schutzmechanismus / Funktion |
+| :--- | :--- | :--- | :--- |
+| **0x10 0x03** | DiagnosticSessionControl | `uds_session.c` | Schaltet die ECU in die angehobene `EXTENDED_SESSION`. |
+| **0x3E** | TesterPresent | `uds_session.c` | Setzt den S3-Verbindungstimer im Hintergrund zurück. |
+| **-** | S3-Timer Fallback | `uds_session.c` | Prüft, ob der `k_timer` nach 5000 ms Inaktivität autark in die `DEFAULT_SESSION` zurückfällt. |
+| **0x27** | Security Access | `uds_security.c` | Überprüft den NVS-Flash-basierten Anti-Brute-Force Lockout (Sperre nach 3 Fehlversuchen für 10s). |
+| **0x19 0x02** | ReadDTCInformation | `uds_read_dtc.c` | Liest Fehlerspeichereinträge via ISO-TP Multi-Frame (Consecutive Frames) aus. |
+| **0x14** | ClearDiagnosticInfo | `uds_clear_dtc.c` | Validiert den asynchronen `k_work`-Handshake (zyklische `NRC 0x78 Response Pending` Meldungen während der Flash-Löschung). |
+| **0x2F** | InputOutputControl | `uds_iocontrol.c` | Steuert Aktuatoren (Status-LED) über die anwendungsspezifische DID `0x0123`. |
+| **0x31** | RoutineControl | `uds_routine.c` | Startet remote Applikations-Routinen in der angehobenen Session. |
+| **0x34** | RequestDownload | `uds_flash_pipeline.c`| Leitet die Flash-Pipeline für Firmware-Streaming-Updates ein. |
 
 ---
 
-## 🔌 Unterstützte UDS-Dienste (ISO 14229-1)
+## 🔒 Krypto- & Adressierungsparameter
 
-| Service ID | Dienstname | Validierter Funktionsumfang |
-| :--- | :--- | :--- |
-| **0x10** | Diagnostic Session Control | Umschaltung zwischen Default (0x01), Programming (0x02) und Extended (0x03). |
-| **0x11** | ECU Reset | Sendet Hard- oder Soft-Reset; prüft, ob die ECU die Antwort vor dem Reboot absetzt. |
-| **0x14** | Clear Diagnostic Info | Signalisiert das Löschen des gesamten Fehlerspeichers (Gruppe 0xFFFFFF). |
-| **0x19** | Read DTC Information | Fordert die aktive Fehlerliste an (`reportDTCByStatusMask`). Multi-Frame erprobt. |
-| **0x22** | Read Data By Identifier | Liest vordefinierte DIDs aus dem Speicher des Steuergeräts aus (z. B. VIN `0xF190`). |
-| **0x27** | Security Access | Initiiert den Seed-Request und schickt den berechneten Key automatisiert hinterher. |
-| **0x2E** | Write Data By Identifier | Beschreibt DIDs (inkl. Überwachung der Sitzungs-Sperre außerhalb von Extended). |
-| **0x2F** | Input Output Control | Simuliert Stellgliedtests (z. B. LEDs via `ShortTermAdjustment` / `ReturnControl`). |
-| **0x31** | Routine Control | Startet oder stoppt asynchrone Hintergrundroutinen der Hardware (z. B. Erase vor Flash). |
-| **0x34** | Request Download | Initialisiert die Flash-Pipeline und verhandelt die Blocklängen für das Firmware-Update. |
-| **0x36** | Transfer Data | Streamt die geladene `.bin`-Datei blockweise mit fortlaufendem Sequenzzähler an die ECU. |
-| **0x37** | Request Transfer Exit | Schließt die Flash-Pipeline und versetzt den Flash-Treiber wieder in den Ruhezustand. |
+Die Suite ist fest auf die Adressarchitektur und den Sicherheitsalgorithmus des Zephyr-Moduls kalibriert:
+
+*   **CAN-ID Client/Tester (TX):** `0x7E0` (Physikalische Anfrage)
+*   **CAN-ID ECU/Server (RX):** `0x7E8` (Physikalische Antwort)
+*   **Funktionale ID (Broadcast):** `0x7DF` (Wird zur Überprüfung der funktionalen NRC-Unterdrückung genutzt)
+*   **Krypto-Algorithmus (Level 1 Standard):** `expected_key = seed_val ^ 0xABCDE123`
+*   **Krypto-Algorithmus (Level 3 Extended):** `expected_key = seed_val ^ 0xDEADBEEF`
 
 ---
 
-## 📦 System-Voraussetzungen
+## 💡 Spezifische Testabläufe
 
-Stelle sicher, dass dein Linux-System mit den notwendigen Kernel-Modulen und Python-Paketen ausgestattet ist:
+### 1. 🛠️ Input/Output Control (Status-LED)
+Der Test für den Dienst `0x2F` ist in drei anwendungsspezifische Interaktionen für die `DID 0x0123` unterteilt. Er durchläuft automatisiert die Session- und Krypto-Vorschaltkette, um `NRC 0x33` zu verhindern:
+*   **LED Einschalten:** Sendet `2F 01 23 03 01` (*ShortTermAdjustment* mit Zustand Ein). Schaltet die physische LED auf dem Board ein.
+*   **LED Ausschalten:** Sendet `2F 01 23 03 00` (*ShortTermAdjustment* mit Zustand Aus).
+*   **Kontrolle zurückgeben:** Sendet `2F 01 23 00` (*ReturnControlToECU*). Übergibt das GPIO-Handling zurück an die autarke Steuerung des Steuergeräts.
 
+### 2. ⏳ Asynchroner k_work-Handshake (Clear DTC)
+Beim Klick auf das Löschen des Fehlerspeichers wird simuliert, dass die Hardware 1200 ms zum Leeren der Flash-Sektoren benötigt.
+*   Die GUI fängt in einer adaptiven Empfangsschleife (bis zu 150 Durchläufe) die vom Zephyr-Modul periodisch gesendeten `7F 14 78` (*Response Pending*) Frames lückenlos ab, um Socket-Timeouts zu verhindern.
+*   Nach Ablauf der Löschzeit bricht das C-Modul den One-Shot-Timer ab und die GUI quittiert den erfolgreichen Abschluss mit dem Erhalt des positiven `0x54`-Erfolgsbytes.
+
+---
+
+## 🚀 Inbetriebnahme & Ausführung
+
+### 1. Virtuelles CAN-Interface einrichten (Falls keine echte Hardware verbunden ist)
 ```bash
-# 1. Installiere die Python-Abhängigkeiten im Workspace
-pip3 install PyQt5 can-isotp
-
-# 2. Lade das native Linux-ISO-TP-Kernelmodul
-sudo modprobe can-isotp
-```
-
----
-
-## 🏃‍♂️ Inbetriebnahme & Anwendung
-
-### 1. CAN-Interface konfigurieren
-Initialisiere dein physikalisches USB-zu-CAN-Interface (oder einen virtuellen Bus für lokale Integrationstests) mit der exakten Bitrate des Zephyr-Steuergeräts (Standard: 500 kBit/s):
-
-```bash
-# Für echte Hardware-Adapter (z.B. Peak-CAN, Candlelight):
-sudo ip link set can0 down
-sudo ip link set can0 type can bitrate 500000
-sudo ip link set can0 up
-
-# Alternativ für rein virtuelle Vortests (vcan):
 sudo modprobe vcan
-sudo ip link add dev vcan0 type vcan
-sudo ip link set up vcan0
+sudo ip link add dev can0 type vcan
+sudo ip link set up can0
 ```
 
-### 2. Testsuite starten
-Das Skript wertet beim Start das erste Kommandozeilen-Argument aus. Wird kein Interface angegeben, nutzt das Tool automatisch das Fallback **`can0`**.
-
+### 2. Abhängigkeiten installieren
+Die Testsuite benötigt Python 3.10+ und die Bibliotheken für Qt5 sowie die SocketCAN-Protokollfamilie:
 ```bash
-# Startet standardmäßig auf physikalischem 'can0'
-python3 main.py
-
-# Startet explizit auf einem virtuellen Interface
-python3 main.py vcan0
-
-# Startet auf einem sekundären Hardware-Kanal
-python3 main.py can1
+pip install PyQt5 python-can can-isotp
 ```
 
-### 3. Log-Überwachung nutzen
-Jede Interaktion wird im Überwachungsfenster farblos, strukturiert und mit direkter Protokoll-Erklärung ausgegeben. Sollte das Zephyr-Board eine Anfrage verwerfen, wird der genaue **Negative Response Code (NRC)** direkt im Klartext aufgeschlüsselt (z. B. `IncorrectMessageLengthOrInvalidFormat`), was die Fehlersuche drastisch verkürzt.
+### 3. Testsuite starten
+Die Ausführung erfolgt über das zentrale Hauptprogramm im Testsuite-Verzeichnis. Als Argument wird das SocketCAN-Interface übergeben:
+```bash
+python main.py can0
+```
+
+## 🧹 Komfortfunktionen
+*   **Puffer-Auto-Flush:** Vor kritischen Diensten (wie dem Krypto-Handshake beim IO-Control) leert die Python-Suite das Socket vollautomatisch von alten "Geister-Bytes", um Race-Conditions im Linux-Kernel zu verhindern.
+*   **🧹 Log-Fenster leeren:** Über die integrierte Schaltfläche direkt oberhalb des Terminals kann das Bus- und Eventprotokoll jederzeit mit einem Klick bereinigt werden, um bei aufeinanderfolgenden Testzyklen die Übersicht zu behalten.
