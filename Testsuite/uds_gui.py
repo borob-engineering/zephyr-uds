@@ -1,201 +1,291 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 import sys
 import time
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
-                             QTextEdit, QGroupBox, QFileDialog, QLabel)
-from PyQt5.QtCore import Qt, pyqtSignal
-from udsoncan import services
+from PyQt5.QtWidgets import (
+    QMainWindow, QWidget, QVBoxLayout, 
+    QHBoxLayout, QPushButton, QTextEdit, QGroupBox, QGridLayout
+)
+from PyQt5.QtCore import QCoreApplication
+import can
+import isotp
 
-class UdsGui(QWidget):
-    # Dediziertes Qt-Signal für thread-sicheres Logging
-    rx_packet_signal = pyqtSignal(bytes)
-
-    def __init__(self, uds_client=None, socket=None):
+class UdsGuiTesterWindow(QMainWindow):
+    def __init__(self):
         super().__init__()
-        self.client = uds_client
-        self.socket = socket
-        self.gui_block_sequence_counter = 1
-        
-        # Signal mit der Empfangsmethode verknüpfen
-        self.rx_packet_signal.connect(self.gui_receive_logger)
+        self.interface_name = 'can0'
+        self.isotp_socket = None
         self.init_ui()
+        self.init_can_network()
+
+    def init_can_network(self):
+        """Initialisiert das ISO-TP-Netzwerk mit einem Schutz-Timeout."""
+        try:
+            tp_address = isotp.Address(rxid=0x7E8, txid=0x7E0)
+            self.isotp_socket = isotp.socket()
+            
+            # Setzt einen Timeout von 2.0 Sekunden auf Socket-Ebene gegen Core Dumps
+            self.isotp_socket.settimeout(2.0)
+            
+            self.isotp_socket.bind(self.interface_name, tp_address)
+            self.log_output(f"[SYSTEM] ISO-TP Socket aktiv auf {self.interface_name} (Timeout: 2s).")
+        except Exception as e:
+            self.log_output(f"[SYSTEM-FEHLER] CAN-Verbindung fehlgeschlagen: {str(e)}")
+
+    def log_output(self, text):
+        self.text_log.append(text)
+        self.text_log.ensureCursorVisible()
+
+    def closeEvent(self, event):
+        if self.isotp_socket:
+            self.isotp_socket.close()
+        event.accept()
 
     def init_ui(self):
-        self.setWindowTitle("UDS Hardware-Testsuite (udsoncan-Engine)")
-        self.resize(650, 700)
-        main_layout = QVBoxLayout()
+        """Erstellt das Layout für die Abdeckung aller C-Module ohne Überlagerungen."""
+        self.setWindowTitle("Zephyr UDS Modul-Testsuite (Vollständige Abdeckung)")
+        self.resize(950, 800)
 
-        # --- Gruppe 1: Session & Basic Diagnostics ---
-        basic_group = QGroupBox("Diagnostic Sessions & Security (0x10 / 0x27 / 0x11)")
-        basic_layout = QHBoxLayout()
-        self.btn_default_sess = QPushButton("Default (0x01)")
-        self.btn_default_sess.clicked.connect(lambda: self.execute_uds_call(bytes([0x10, 0x01])))
-        self.btn_prog_sess = QPushButton("Programming (0x02)")
-        self.btn_prog_sess.clicked.connect(lambda: self.execute_uds_call(bytes([0x10, 0x02])))
-        self.btn_ext_sess = QPushButton("Extended (0x03)")
-        self.btn_ext_sess.clicked.connect(lambda: self.execute_uds_call(bytes([0x10, 0x03])))
-        self.btn_req_seed = QPushButton("Security Handshake (0x27)")
-        self.btn_req_seed.clicked.connect(lambda: self.execute_uds_call(bytes([0x27, 0x01])))
-        self.btn_ecu_reset = QPushButton("ECU Reset (0x11)")
-        self.btn_ecu_reset.clicked.connect(lambda: self.execute_uds_call(bytes([0x11, 0x01])))
-        basic_layout.addWidget(self.btn_default_sess)
-        basic_layout.addWidget(self.btn_prog_sess)
-        basic_layout.addWidget(self.btn_ext_sess)
-        basic_layout.addWidget(self.btn_req_seed)
-        basic_layout.addWidget(self.btn_ecu_reset)
-        basic_group.setLayout(basic_layout)
-        main_layout.addWidget(basic_group)
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QVBoxLayout(central_widget)
 
-        # --- Gruppe 2: DTC-Speicherverwaltung ---
-        dtc_group = QGroupBox("Fehlerspeicher / DTC Management (0x14 / 0x19)")
-        dtc_layout = QHBoxLayout()
-        self.btn_read_dtc = QPushButton("Read DTCs (0x19)")
-        self.btn_read_dtc.clicked.connect(lambda: self.execute_uds_call(bytes([0x19, 0x02, 0xFF])))
-        self.btn_clear_dtc = QPushButton("Clear Fault Memory (0x14)")
-        self.btn_clear_dtc.clicked.connect(lambda: self.execute_uds_call(bytes([0x14, 0xFF, 0xFF, 0xFF])))
-        dtc_layout.addWidget(self.btn_read_dtc)
-        dtc_layout.addWidget(self.btn_clear_dtc)
-        dtc_group.setLayout(dtc_layout)
-        main_layout.addWidget(dtc_group)
+        # Gitter-Widget für die saubere Platzierung aller 4 Testgruppen
+        grid_widget = QWidget()
+        grid_layout = QGridLayout(grid_widget)
 
-        # --- Gruppe 3: E/A Control & Routines ---
-        hw_group = QGroupBox("Hardware I/O & Routine Control (0x2F / 0x31)")
-        hw_layout = QHBoxLayout()
-        self.btn_io_active = QPushButton("Actuator Control ON (0x2F)")
-        self.btn_io_active.clicked.connect(lambda: self.execute_uds_call(bytes([0x2F, 0xDF, 0x01, 0x03, 0x01])))
-        self.btn_io_release = QPushButton("Return Control to ECU (0x2F)")
-        self.btn_io_release.clicked.connect(lambda: self.execute_uds_call(bytes([0x2F, 0xDF, 0x01, 0x00])))
-        self.btn_start_routine = QPushButton("Start Routine 0x0202 (0x31)")
-        self.btn_start_routine.clicked.connect(lambda: self.execute_uds_call(bytes([0x31, 0x01, 0x02, 0x02])))
-        hw_layout.addWidget(self.btn_io_active)
-        hw_layout.addWidget(self.btn_io_release)
-        hw_layout.addWidget(self.btn_start_routine)
-        hw_group.setLayout(hw_layout)
-        main_layout.addWidget(hw_group)
+        # --- Gruppe 1: Core & Session (uds_session.c / uds_security.c) ---
+        group_core = QGroupBox("1. Session & Security (uds_session.c / uds_security.c)")
+        layout_core = QVBoxLayout()
+        btn_session = QPushButton("Session Control (0x10 0x03)")
+        btn_session.clicked.connect(self.send_extended_session)
+        layout_core.addWidget(btn_session)
+        btn_s3_timer = QPushButton("S3 k_timer Fallback Test")
+        btn_s3_timer.clicked.connect(self.run_s3_timer_test)
+        layout_core.addWidget(btn_s3_timer)
+        btn_brute = QPushButton("Security Access Sperr-Test (0x27)")
+        btn_brute.clicked.connect(self.run_brute_force_lock_test)
+        layout_core.addWidget(btn_brute)
+        group_core.setLayout(layout_core)
+        # Position: Zeile 0, Spalte 0
+        grid_layout.addWidget(group_core, 0, 0)
 
-        # --- Gruppe 4: Firmware Flashing Pipeline ---
-        flash_group = QGroupBox("Firmware Flashing Pipeline (0x34 -> 0x36 -> 0x37)")
-        flash_layout = QVBoxLayout()
-        self.lbl_flash_status = QLabel("Keine Firmware-Datei geladen.")
-        self.lbl_flash_status.setAlignment(Qt.AlignCenter)
-        self.btn_flash_stream = QPushButton("Firmware (.bin) auswählen und flashen")
-        self.btn_flash_stream.clicked.connect(self.action_automate_flash_pipeline)
-        flash_layout.addWidget(self.lbl_flash_status)
-        flash_layout.addWidget(self.btn_flash_stream)
-        flash_group.setLayout(flash_layout)
-        main_layout.addWidget(flash_group)
+        # --- Gruppe 2: DTC Management (uds_clear_dtc.c / uds_read_dtc.c) ---
+        group_dtc = QGroupBox("2. DTC Management (uds_clear_dtc.c / uds_read_dtc.c)")
+        layout_dtc = QVBoxLayout()
+        btn_read_dtc = QPushButton("Read DTC by Status (0x19 0x02)")
+        btn_read_dtc.clicked.connect(self.run_read_dtc_test)
+        layout_dtc.addWidget(btn_read_dtc)
+        btn_clear_dtc = QPushButton("Asynchrones Clear DTC (0x14)")
+        btn_clear_dtc.clicked.connect(self.run_async_work_test)
+        layout_dtc.addWidget(btn_clear_dtc)
+        group_dtc.setLayout(layout_dtc)
+        # Position: Zeile 0, Spalte 1
+        grid_layout.addWidget(group_dtc, 0, 1)
 
-        # --- Text-Logbereich ---
-        log_header_layout = QHBoxLayout()
-        log_header_layout.addWidget(QLabel("UDS Bus-Überwachung & Logausgabe:"))
-        self.btn_clear_log = QPushButton("Log löschen")
-        self.btn_clear_log.setFixedWidth(100)
-        self.btn_clear_log.clicked.connect(lambda: self.log_area.clear())
-        log_header_layout.addWidget(self.btn_clear_log, alignment=Qt.AlignRight)
-        main_layout.addLayout(log_header_layout)
-        
-        self.log_area = QTextEdit()
-        self.log_area.setReadOnly(True)
-        main_layout.addWidget(self.log_area)
-        self.setLayout(main_layout)
+        # --- Gruppe 3: Ein-/Ausgabe & Routinen (uds_iocontrol.c / uds_routine.c) ---
+        group_ctrl = QGroupBox("3. IO & Routines (uds_iocontrol.c / uds_routine.c)")
+        layout_ctrl = QVBoxLayout()
+        btn_io = QPushButton("IO Control by Identifier (0x2F)")
+        btn_io.clicked.connect(self.run_io_control_test)
+        layout_ctrl.addWidget(btn_io)
+        btn_routine = QPushButton("Routine Control Start (0x31)")
+        btn_routine.clicked.connect(self.run_routine_control_test)
+        layout_ctrl.addWidget(btn_routine)
+        group_ctrl.setLayout(layout_ctrl)
+        # Position: Zeile 1, Spalte 0
+        grid_layout.addWidget(group_ctrl, 1, 0)
 
-    def log(self, text):
-        self.log_area.append(text)
+        # --- Gruppe 4: Flash Pipeline & Broadcast (uds_flash_pipeline.c) ---
+        group_flash = QGroupBox("4. Flash & Broadcast (uds_flash_pipeline.c)")
+        layout_flash = QVBoxLayout()
+        btn_flash = QPushButton("Request Download (0x34)")
+        btn_flash.clicked.connect(self.run_flash_pipeline_test)
+        layout_flash.addWidget(btn_flash)
+        btn_func = QPushButton("Funktionale NRC-Unterdrückung")
+        btn_func.clicked.connect(self.run_functional_suppression_test)
+        layout_flash.addWidget(btn_func)
+        group_flash.setLayout(layout_flash)
+        # Position: Zeile 1, Spalte 1
+        grid_layout.addWidget(group_flash, 1, 1)
 
-    def trigger_rx_signal(self, raw_bytes):
-        self.rx_packet_signal.emit(raw_bytes)
+        main_layout.addWidget(grid_widget)
 
-    def execute_uds_call(self, payload):
-        """Sendet Daten direkt asynchron über das ISO-TP-Socket."""
-        if not self.socket:
-            self.log("[Fehler] Kein Socket vorhanden!")
-            return
-        
-        sid = payload[0]
-        explain = f"UDS Dienst 0x{sid:02X}"
-        if sid == 0x10: explain = "DiagnosticSessionControl"
-        elif sid == 0x11: explain = "ECUReset"
-        elif sid == 0x14: explain = "ClearDiagnosticInformation"
-        elif sid == 0x19: explain = "ReadDTCInformation"
-        elif sid == 0x27: explain = "SecurityAccess (Seed Request)"
-        elif sid == 0x2F: explain = "InputOutputControlByIdentifier"
-        elif sid == 0x31: explain = "RoutineControl"
-
-        self.log(f"[TX ISO-TP] {payload.hex().upper()} ({explain})")
+        # --- Terminal Log-Fenster ---
+        log_group = QGroupBox("Bus- und Testprotokoll")
+        log_layout = QVBoxLayout()
+        self.text_log = QTextEdit()
+        self.text_log.setReadOnly(True)
+        self.text_log.setStyleSheet("background-color: #1E1E1E; color: #A9B7C6; font-family: Consolas;")
+        log_layout.addWidget(self.text_log)
+        log_group.setLayout(log_layout)
+        main_layout.addWidget(log_group)
+    # ==============================================================================
+    # AKTIONEN: CORE, SESSION & SECURITY VALIDIERUNG
+    # ==============================================================================
+    def send_extended_session(self):
+        if not self.isotp_socket: return False
+        self.log_output("[TX] 0x10 0x03 -> DiagnosticSessionControl: EXTENDED")
         try:
-            self.socket.send(payload)
-        except Exception as e:
-            self.log(f"[Fehler] Senden fehlgeschlagen: {e}")
+            self.isotp_socket.send(b"\x10\x03")
+            resp = self.isotp_socket.recv()
+            if resp and len(resp) >= 2 and resp[0] == 0x50 and resp[1] == 0x03:
+                self.log_output(f"[RX] Positive Response (0x50 0x03): {resp.hex().upper()}")
+                return True
+            self.log_output(f"[RX] Negativ / Unerwartet: {resp.hex().upper() if resp else 'None'}")
+        except TimeoutError:
+            self.log_output("[RX] Timeout beim Session-Wechsel.")
+        return False
 
-    def gui_receive_logger(self, raw_bytes):
-        """Wird aufgerufen, sobald der Hintergrundthread Daten empfängt."""
-        if not raw_bytes:
-            return
-        
-        resp_sid = raw_bytes[0]
-        resp_explain = "Antwort erhalten"
-        
-        # Decodierung der wichtigsten UDS-Antworten und NRCs
-        if resp_sid == 0x7F:
-            failed_sid = raw_bytes[1] if len(raw_bytes) > 1 else 0
-            nrc_code = raw_bytes[2] if len(raw_bytes) > 2 else 0
-            nrc_messages = {
-                0x11: "ServiceNotSupported", 0x12: "SubFunctionNotSupported",
-                0x13: "IncorrectMessageLengthOrInvalidFormat", 0x24: "RequestSequenceError",
-                0x31: "RequestOutOfRange", 0x35: "InvalidKey", 0x7E: "SubFunctionNotSupportedInActiveSession"
-            }
-            resp_explain = f"NRC für Dienst 0x{failed_sid:02X}: {nrc_messages.get(nrc_code, f'Fehler 0x{nrc_code:02X}')}"
-        elif resp_sid == 0x50:
-            resp_explain = f"Sitzungswechsel von ECU bestätigt (Typ 0x{raw_bytes[1]:02X})"
-        elif resp_sid == 0x51:
-            resp_explain = "ECU Reset akzeptiert, System startet neu"
-        elif resp_sid == 0x54:
-            resp_explain = "Fehlerspeicher erfolgreich geleert"
-        elif resp_sid == 0x59:
-            resp_explain = "DTC Fehlerliste empfangen"
-        elif resp_sid == 0x67:
-            sub = raw_bytes[1] if len(raw_bytes) > 1 else 0
-            if sub == 0x01:
-                seed = raw_bytes[2:]
-                resp_explain = f"Seed erhalten: {seed.hex().upper()} -> Berechne Key..."
-                computed_key = bytes([b ^ 0xFF for b in seed])
-                # Schicke berechneten Key sofort hinterher (Subfunktion 0x02)
-                self.socket.send(bytes([0x27, 0x02]) + computed_key)
+    def run_s3_timer_test(self):
+        if not self.isotp_socket: return
+        self.log_output("\n[START] Test: S3-Timer Fallback (uds_session.c k_timer)...")
+        if self.send_extended_session():
+            self.log_output("[OK] Extended Session active. Halte Datenverkehr für 5.5s an...")
+            for _ in range(55):
+                time.sleep(0.1)
+                QCoreApplication.processEvents()
+            self.log_output(" -> Wartezeit um. Sende Schreibbefehl (0x2E)...")
+            try:
+                self.isotp_socket.send(b"\x2E\xF1\x90\x01\x02")
+                resp_after = self.isotp_socket.recv()
+                if resp_after and len(resp_after) >= 3 and resp_after[0] == 0x7F and resp_after[2] == 0x7E:
+                    self.log_output("[SUCCESS] S3 k_timer erfolgreich! Server ist autark zurückgefallen (NRC 0x7E).")
+                else:
+                    self.log_output(f"[FAIL] Kein Fallback. Antwort: {resp_after.hex().upper() if resp_after else 'None'}")
+            except TimeoutError:
+                self.log_output("[FAIL] Timeout beim Lesen nach S3-Wartezeit.")
+
+    def run_brute_force_lock_test(self):
+        if not self.isotp_socket: return
+        self.log_output("\n[START] Test: Security Access (uds_security.c)...")
+        if not self.send_extended_session(): return
+        try:
+            for i in range(1, 4):
+                self.isotp_socket.send(b"\x27\x01")
+                self.isotp_socket.recv()
+                self.isotp_socket.send(b"\x27\x02\x00\x00\x00\x00")
+                resp = self.isotp_socket.recv()
+                if resp: self.log_output(f" -> Fehlversuch {i}/3 übermittelt. Antwort: {resp.hex().upper()}")
+                QCoreApplication.processEvents()
+            self.isotp_socket.send(b"\x27\x01")
+            lock_resp = self.isotp_socket.recv()
+            if lock_resp and len(lock_resp) >= 3 and lock_resp[0] == 0x7F and lock_resp[2] == 0x36:
+                self.log_output("[SUCCESS] Anti-Brute-Force-Sperre intakt (NRC 0x36 empfangen).")
             else:
-                resp_explain = "ECU erfolgreich entsperrt (Security Access granted)"
+                self.log_output(f"[INFO] Antwort der ECU bei 4. Anfrage: {lock_resp.hex().upper() if lock_resp else 'None'}")
+        except TimeoutError:
+            self.log_output("[RX] Timeout während des Security Access Tests.")
 
-        self.log(f"[RX ISO-TP] {raw_bytes.hex().upper()} ({resp_explain})\n")
-
-    def action_automate_flash_pipeline(self):
-        if not self.socket: return
-        file_path, _ = QFileDialog.getOpenFileName(self, "Firmware-Binary öffnen", "", "Binary Files (*.bin);;All Files (*)")
-        if not file_path: return
+    # ==============================================================================
+    # AKTIONEN: DTC SPEICHER VALIDIERUNG
+    # ==============================================================================
+    def run_read_dtc_test(self):
+        if not self.isotp_socket: return
+        self.log_output("\n[START] Test: Read DTC Information (uds_read_dtc.c)...")
         try:
-            with open(file_path, "rb") as f: bin_data = f.read()
-            total_bytes = len(bin_data)
-            self.lbl_flash_status.setText(f"Flashing läuft...")
-            
-            # 1. Download anfordern
-            self.socket.send(bytes([0x34, 0x00, 0x44, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00]))
-            time.sleep(0.1)
-            
-            # 2. Datenblöcke streamen
-            block_size = 256
-            block_counter = 1
-            for i in range(0, total_bytes, block_size):
-                chunk = bin_data[i:i+block_size]
-                self.socket.send(bytes([0x36, block_counter]) + chunk)
-                block_counter = (block_counter + 1) if block_counter < 255 else 1
-                time.sleep(0.01)
-            
-            # 3. Pipeline schließen
-            self.socket.send(bytes([0x37]))
-            self.lbl_flash_status.setText("Flash-Vorgang erfolgreich!")
-        except Exception as e:
-            self.log(f"[Flash Error] {e}")
-            self.lbl_flash_status.setText("Fehler.")
+            self.isotp_socket.send(b"\x19\x02\x8F")
+            resp = self.isotp_socket.recv()
+            if resp and resp[0] == 0x59:
+                self.log_output(f"[SUCCESS] DTCs erfolgreich ausgelesen! Antwort-Bytes: {resp.hex().upper()}")
+            else:
+                self.log_output(f"[FAIL] Negative Response vom C-Modul: {resp.hex().upper() if resp else 'None'}")
+        except TimeoutError:
+            self.log_output("[FAIL] Timeout-Verbindungsfehler beim Lesen der DTCs. Prüfe ISO-TP Multi-Frame Support im Zephyr-Modul.")
 
-if __name__ == "__main__":
-    print("Bitte starte das Tool über 'python3 main.py'!")
+    def run_async_work_test(self):
+        """
+        Wartet in einer robusten Schleife auf die finale Abarbeitung,
+        um fortlaufende Response Pending (0x78) Frames lückenlos zu verarbeiten.
+        """
+        if not self.isotp_socket: return
+        self.log_output("\n[START] Test: Asynchrones Clear DTC (uds_clear_dtc.c k_work)...")
+        try:
+            self.isotp_socket.send(b"\x14\xFF\xFF\xFF")
+            
+            # Erhöht auf 150 Frames, um langsame Flash-Löschzyklen abzufangen
+            max_pending_frames = 150
+            for attempt in range(max_pending_frames):
+                resp = self.isotp_socket.recv()
+                
+                if resp and len(resp) >= 3 and resp[0] == 0x7F and resp[2] == 0x78:
+                    self.log_output(f"[OK] Handshake [{attempt+1}]: UDS_NRC_RESPONSE_PENDING (0x78) empfangen...")
+                    QCoreApplication.processEvents()
+                    continue
+                
+                if resp and resp[0] == 0x54:
+                    self.log_output(f"[SUCCESS] Asynchroner k_work-Ablauf erfolgreich beendet! Positive Response: {resp.hex().upper()}")
+                else:
+                    self.log_output(f"[FAIL] Unerwartete Antwort erhalten: {resp.hex().upper() if resp else 'None'}")
+                break
+        except TimeoutError:
+            self.log_output("[FAIL] Timeout beim asynchronen Löschen (ECU reagiert nicht mehr).")
+
+
+    # ==============================================================================
+    # AKTIONEN: IO CONTROL, ROUTINEN & FLASH PIPELINE VALIDIERUNG
+    # ==============================================================================
+    def run_io_control_test(self):
+        if not self.isotp_socket: return
+        self.log_output("\n[START] Test: Input Output Control by Identifier (uds_iocontrol.c)...")
+        try:
+            self.isotp_socket.send(b"\x2F\xF1\x00\x03\x01")
+            resp = self.isotp_socket.recv()
+            if resp and resp[0] == 0x6F:
+                self.log_output(f"[SUCCESS] IO-Eingriff vom C-Modul akzeptiert: {resp.hex().upper()}")
+            else:
+                self.log_output(f"[FAIL] IO Control abgelehnt: {resp.hex().upper() if resp else 'None'}")
+        except TimeoutError:
+            self.log_output("[FAIL] Timeout bei IO Control.")
+
+    def run_routine_control_test(self):
+        if not self.isotp_socket: return
+        self.log_output("\n[START] Test: Routine Control Start (uds_routine.c)...")
+        if self.send_extended_session():
+            self.log_output(" -> Extended Session aktiv. Sende Routine Start (0x31 0x01)...")
+            try:
+                self.isotp_socket.send(b"\x31\x01\x02\x00")
+                resp = self.isotp_socket.recv()
+                if resp and resp[0] == 0x71:
+                    self.log_output(f"[SUCCESS] Routine-Start erfolgreich zurückgemeldet: {resp.hex().upper()}")
+                else:
+                    self.log_output(f"[FAIL] Routine Control blockiert. Antwort der ECU: {resp.hex().upper() if resp else 'None'}")
+            except TimeoutError:
+                self.log_output("[FAIL] Timeout bei Routine Control.")
+        else:
+            self.log_output("[FAIL] Routine-Test abgebrochen, da Extended Session nicht gestartet werden konnte.")
+
+    def run_flash_pipeline_test(self):
+        if not self.isotp_socket: return
+        self.log_output("\n[START] Test: Request Download Pipeline (uds_flash_pipeline.c)...")
+        if not self.send_extended_session(): return
+        try:
+            self.isotp_socket.send(b"\x34\x00\x44\x00\x10\x00\x00\x00\x00\xFF\xFF")
+            resp = self.isotp_socket.recv()
+            if resp and resp[0] == 0x74:
+                self.log_output(f"[SUCCESS] Flash-Pipeline erfolgreich geöffnet: {resp.hex().upper()}")
+            else:
+                self.log_output(f"[FAIL] Flash-Pipeline abgelehnt: {resp.hex().upper() if resp else 'None'}")
+        except TimeoutError:
+            self.log_output("[FAIL] Timeout bei Flash Pipeline Request.")
+
+    def run_functional_suppression_test(self):
+        self.log_output("\n[START] Test: Funktionale NRC-Unterdrückung (Broadcast an 0x7DF)...")
+        try:
+            raw_bus = can.interface.Bus(interface='socketcan', channel=self.interface_name, bitrate=500000)
+            msg = can.Message(arbitration_id=0x7DF, data=[0x02, 0x99, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], is_extended_id=False)
+            raw_bus.send(msg)
+            self.log_output(" -> Paket an funktionale ID 0x7DF gesendet. Lausche auf Antworten...")
+
+            start_time = time.time()
+            violating_nrc = False
+            while time.time() - start_time < 1.0:
+                QCoreApplication.processEvents()
+                rx_msg = raw_bus.recv(timeout=0.05)
+                if rx_msg and rx_msg.arbitration_id == 0x7E8 and len(rx_msg.data) >= 3 and rx_msg.data[0] == 0x7F:
+                    self.log_output(f"[FAIL] ISO-TP Verstoß! ECU antwortete funktional mit NRC {hex(rx_msg.data[2])}")
+                    violating_nrc = True
+                    break
+            if not violating_nrc:
+                self.log_output("[SUCCESS] Protokollkonform: NRC wurde auf der funktionalen ID unterdrückt.")
+            raw_bus.shutdown()
+        except Exception as e:
+            self.log_output(f"[SYSTEM-FEHLER] CAN-Bus-Zugriff gescheitert: {str(e)}")
