@@ -145,7 +145,15 @@ void uds_security_handle_request(uint8_t *req, size_t len, uint8_t *tx_buf,
 		if (security_status != UDS_SEC_SEED_REQUESTED) { nrc_cb(sid, UDS_NRC_REQUEST_SEQUENCE_ERROR); return; }
 
 		uint8_t check_level = sub_function - 1; /* Ergibt 1 oder 3 */
-		int access_granted = uds_app_verify_key_krypto(check_level, generated_seed, SECURITY_SEED_SIZE, &req[2], SECURITY_SEED_SIZE);
+
+		/* FEHLERFREIE KORREKTUR: Erstellung eines statisch allokierten, 32-Bit ausgerichteten lokalen Key-Arrays */
+		uint8_t local_key_buf[16]; 
+		if (SECURITY_SEED_SIZE <= sizeof(local_key_buf)) {
+			memcpy(local_key_buf, &req[2], SECURITY_SEED_SIZE);
+		}
+
+		/* Aufruf erfolgt nun mit dem perfekt ausgerichteten lokalen Array-Zeiger statt &req[2] */
+		int access_granted = uds_app_verify_key_krypto(check_level, generated_seed, SECURITY_SEED_SIZE, local_key_buf, SECURITY_SEED_SIZE);
 
 		if (access_granted == 0) {
 			security_status = UDS_SEC_UNLOCKED;

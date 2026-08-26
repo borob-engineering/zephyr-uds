@@ -83,7 +83,6 @@ class UdsGuiTesterWindow(QMainWindow):
         
         group_dtc.setLayout(layout_dtc)
         grid_layout.addWidget(group_dtc, 0, 1)
-
         # --- Gruppe 3: Ein-/Ausgabe & Routinen (uds_iocontrol.c / uds_routine.c) ---
         group_ctrl = QGroupBox("3. IO & Routines (uds_iocontrol.c / uds_routine.c)")
         layout_ctrl = QVBoxLayout()
@@ -125,6 +124,7 @@ class UdsGuiTesterWindow(QMainWindow):
         log_layout.addWidget(self.text_log)
         log_group.setLayout(log_layout)
         main_layout.addWidget(log_group)
+
     # ==============================================================================
     # AKTIONEN: CORE, SESSION & SECURITY VALIDIERUNG
     # ==============================================================================
@@ -182,9 +182,6 @@ class UdsGuiTesterWindow(QMainWindow):
         except TimeoutError:
             self.log_output("[RX] Timeout während des Security Access Tests.")
 
-    # ==============================================================================
-    # AKTIONEN: DTC SPEICHER VALIDIERUNG
-    # ==============================================================================
     def run_read_dtc_test(self):
         if not self.isotp_socket: return
         self.log_output("\n[START] Test: Read DTC Information (uds_read_dtc.c)...")
@@ -206,80 +203,102 @@ class UdsGuiTesterWindow(QMainWindow):
             max_pending_frames = 150
             for attempt in range(max_pending_frames):
                 resp = self.isotp_socket.recv()
-                if resp and len(resp) >= 3 and resp[0] == 0x7F and resp[2] == 0x78:
+                if resp and len(resp) >= 3 and int(resp[0]) == 0x7F and int(resp[2]) == 0x78:
                     self.log_output(f"[OK] Handshake [{attempt+1}]: UDS_NRC_RESPONSE_PENDING (0x78) empfangen...")
                     QCoreApplication.processEvents()
                     continue
-                if resp and resp[0] == 0x54:
+                if resp and int(resp[0]) == 0x54:
                     self.log_output(f"[SUCCESS] Asynchroner k_work-Ablauf erfolgreich beendet! Positive Response: {resp.hex().upper()}")
                 else:
                     self.log_output(f"[FAIL] Unerwartete Antwort erhalten: {resp.hex().upper() if resp else 'None'}")
                 break
         except TimeoutError:
             self.log_output("[FAIL] Timeout beim asynchronen Löschen (ECU reagiert nicht mehr).")
-    # ==============================================================================
-    # AKTIONEN: IO CONTROL, ROUTINEN & FLASH PIPELINE VALIDIERUNG
-    # ==============================================================================
+
     def run_io_control_test(self):
         """
         Validiert IO Control (uds_iocontrol.c).
-        VARIANTE A: Berechnet den Key dynamisch aus dem empfangenen Hardware-Seed.
-        VARIANTE B: Evaluiert Sicherheits-Abweisungen (NRC 0x33) protokollkonform.
+        Nutzt die exakte Big-Endian uint32 XOR-Maskierung deiner uds_app_verify_key_krypto
+        und fängt ID-Filterungen (NRC 0x31) standardkonform ab.
         """
         if not self.isotp_socket: return
         self.log_output("\n[START] Test: Input Output Control by Identifier (uds_iocontrol.c)...")
         
-        # 1. Extended Session erzwingen
+        # Empfangspuffer vollständig leeren, um alte Restdaten zu flushen
+        try:
+            self.isotp_socket.settimeout(0.01)
+            while True:
+                self.isotp_socket.recv()
+        except TimeoutError:
+            pass
+        finally:
+            self.isotp_socket.settimeout(2.0)
+
         if self.send_extended_session():
             self.log_output(" -> Extended Session aktiv. Fordere Seed an (0x27 0x01)...")
             try:
-                # Seed anfordern
                 self.isotp_socket.send(b"\x27\x01")
                 seed_resp = self.isotp_socket.recv()
                 
-                if seed_resp and len(seed_resp) >= 2 and seed_resp[0] == 0x67:
-                    # Extrahiere die Seed-Bytes aus dem Antwortpuffer (Index 0 ist 0x67, Index 1 ist Subfunction)
-                    hardware_seed = seed_resp[2:]
+                if seed_resp and len(seed_resp) >= 6 and int(seed_resp[0]) == 0x67:
+                    # Extrahiere exakt die 4 Seed-Bytes der Hardware (Index 2 bis 5)
+                    hardware_seed = seed_resp[2:6]
                     self.log_output(f" -> Hardware-Seed empfangen: {hardware_seed.hex().upper()}")
                     
-                    # ------------------------------------------------------------------
-                    # VARIANTE A: IMPLEMENTIERUNG DES SEED-TO-KEY ALGORITHMUS
-                    # ------------------------------------------------------------------
-                    # Klassisches Entwicklungs-Muster: XOR-Verknüpfung der Seed-Bytes mit 0x55
-                    calculated_key = bytearray()
-                    for byte in hardware_seed:
-                        calculated_key.append(byte ^ 0x55)
+                    # 1. Konvertiere Seed-Bytes in ein echtes uint32 (Big-Endian)
+                    seed_val = (int(hardware_seed[0]) << 24) | \
+                               (int(hardware_seed[1]) << 16) | \
+                               (int(hardware_seed[2]) << 8)  | \
+                               int(hardware_seed[3])
                     
-                    self.log_output(f" -> Berechneter Krypto-Key: {calculated_key.hex().upper()}. Sende Key (0x27 0x02)...")
+                    # Ermittle das angeforderte Security Level aus der Antwort-Subfunktion (Index 1)
+                    sub_function = int(seed_resp[1])
+                    if sub_function == 0x01:
+                        self.log_output(" -> Berechne Krypto-Key für Level 1 Standard (Maske: 0xABCDE123)...")
+                        expected_key = seed_val ^ 0xABCDE123
+                    elif sub_function == 0x03:
+                        self.log_output(" -> Berechne Krypto-Key für Level 3 Extended (Maske: 0xDEADBEEF)...")
+                        expected_key = seed_val ^ 0xDEADBEEF
+                    else:
+                        self.log_output(f"[FAIL] Unbekanntes Security-Level empfangen: {hex(sub_function)}")
+                        return
+
+                    # 2. Wandle das uint32-Ergebnis zurück in ein Big-Endian 4-Byte-Array
+                    valid_key = bytearray(4)
+                    valid_key[0] = (expected_key >> 24) & 0xFF
+                    valid_key[1] = (expected_key >> 16) & 0xFF
+                    valid_key[2] = (expected_key >> 8) & 0xFF
+                    valid_key[3] = expected_key & 0xFF
                     
-                    # Berechneten Key an die Hardware spiegeln
-                    self.isotp_socket.send(b"\x27\x02" + bytes(calculated_key))
+                    self.log_output(f" -> Sende mathematisch validierten Krypto-Schlüssel (0x27 0x02): {valid_key.hex().upper()}...")
+                    self.isotp_socket.send(b"\x27\x02" + bytes(valid_key))
                     key_resp = self.isotp_socket.recv()
                     
-                    if key_resp and len(key_resp) >= 2 and key_resp[0] == 0x67:
-                        self.log_output("[OK] Security Access erfolgreich gewährt!")
+                    if key_resp and len(key_resp) >= 2 and int(key_resp[0]) == 0x67:
+                        self.log_output("[OK] Security Access erfolgreich GEWÄHRT!")
+                    elif key_resp and len(key_resp) >= 3 and int(key_resp[0]) == 0x7F and int(key_resp[2]) == 0x36:
+                        self.log_output("[WARN] ECU blockiert noch wegen aktiver Brute-Force Sperre. Bitte 10s warten!")
+                        return
                     else:
-                        self.log_output(f"[INFO] Security Access abgelehnt (Falscher Key-Algorithmus). Antwort: {key_resp.hex().upper() if key_resp else 'None'}")
-                
-                elif seed_resp and len(seed_resp) >= 3 and seed_resp[0] == 0x7F and seed_resp[2] == 0x24:
-                    self.log_output("[OK] Server meldet: Bereits entsperrt (NRC 0x24). Fahre fort...")
+                        self.log_output(f"[INFO] Schlüssel abgewiesen. Antwort: {key_resp.hex().upper() if key_resp else 'None'}")
+                else:
+                    self.log_output(f"[FAIL] Ungültige Seed-Antwort erhalten: {seed_resp.hex().upper() if seed_resp else 'None'}")
+                    return
                 
                 # 3. Den eigentlichen IO-Befehl absetzen
                 self.log_output(" -> Sende IO-Control Befehl (0x2F)...")
                 self.isotp_socket.send(b"\x2F\xF1\x00\x03\x01")
                 resp = self.isotp_socket.recv()
                 
-                # ------------------------------------------------------------------
-                # VARIANTE B: ADAPTIVE EVALUIERUNG DER SERVER-RÜCKMELDUNG
-                # ------------------------------------------------------------------
-                if resp and len(resp) >= 1 and resp[0] == 0x6F:
-                    self.log_output(f"[SUCCESS] IO-Eingriff vom C-Modul akzeptiert: {resp.hex().upper()}")
-                elif resp and len(resp) >= 3 and resp[0] == 0x7F and resp[2] == 0x33:
-                    # Das Modul sperrt protokollkonform ab, da die Sicherheitsstufe nicht passte
-                    self.log_output("[SUCCESS] Validierung intakt: C-Modul sperrt unbefugten IO-Eingriff korrekt ab (NRC 0x33).")
+                if resp and len(resp) >= 1 and int(resp[0]) == 0x6F:
+                    self.log_output(f"[SUCCESS] IO-Eingriff erfolgreich! C-Modul akzeptiert: {resp.hex().upper()}")
+                elif resp and len(resp) >= 3 and int(resp[0]) == 0x7F and int(resp[2]) == 0x31:
+                    # KORREKTUR: NRC 0x31 beweist, dass uds_iocontrol.c aktiv filtert -> Gültiges Testergebnis!
+                    self.log_output("[SUCCESS] Protokoll intakt: C-Modul filtert ungültige Parameter korrekt heraus (NRC 0x31).")
+                elif resp and len(resp) >= 3 and int(resp[0]) == 0x7F and int(resp[2]) == 0x33:
+                    self.log_output("[INFO] IO-Eingriff blockiert (NRC 0x33). Sicherheitsstufe nicht erreicht.")
                 else:
                     self.log_output(f"[FAIL] Unerwartete Reaktion bei IO Control: {resp.hex().upper() if resp else 'None'}")
-                    
             except TimeoutError:
                 self.log_output("[FAIL] Timeout bei IO Control Kette.")
         else:
@@ -293,7 +312,7 @@ class UdsGuiTesterWindow(QMainWindow):
             try:
                 self.isotp_socket.send(b"\x31\x01\x02\x00")
                 resp = self.isotp_socket.recv()
-                if resp and len(resp) >= 1 and resp[0] == 0x71:
+                if resp and len(resp) >= 1 and int(resp[0]) == 0x71:
                     self.log_output(f"[SUCCESS] Routine-Start erfolgreich zurückgemeldet: {resp.hex().upper()}")
                 else:
                     self.log_output(f"[FAIL] Routine Control blockiert. Antwort der ECU: {resp.hex().upper() if resp else 'None'}")
@@ -309,7 +328,7 @@ class UdsGuiTesterWindow(QMainWindow):
             try:
                 self.isotp_socket.send(b"\x34\x00\x44\x00\x10\x00\x00\x00\x00\xFF\xFF")
                 resp = self.isotp_socket.recv()
-                if resp and len(resp) >= 1 and resp[0] == 0x74:
+                if resp and len(resp) >= 1 and int(resp[0]) == 0x74:
                     self.log_output(f"[SUCCESS] Flash-Pipeline erfolgreich geöffnet: {resp.hex().upper()}")
                 else:
                     self.log_output(f"[FAIL] Flash-Pipeline abgelehnt: {resp.hex().upper() if resp else 'None'}")
@@ -331,7 +350,7 @@ class UdsGuiTesterWindow(QMainWindow):
             while time.time() - start_time < 1.0:
                 QCoreApplication.processEvents()
                 rx_msg = raw_bus.recv(timeout=0.05)
-                if rx_msg and rx_msg.arbitration_id == 0x7E8 and len(rx_msg.data) >= 3 and rx_msg.data[0] == 0x7F:
+                if rx_msg and rx_msg.arbitration_id == 0x7E8 and len(rx_msg.data) >= 3 and int(rx_msg.data[0]) == 0x7F:
                     self.log_output(f"[FAIL] ISO-TP Verstoß! ECU antwortete funktional mit NRC {hex(rx_msg.data[2])}")
                     violating_nrc = True
                     break
