@@ -42,7 +42,7 @@ class UdsGuiTesterWindow(QMainWindow):
     def init_ui(self):
         """Erstellt das Layout für die Abdeckung aller C-Module ohne Überlagerungen."""
         self.setWindowTitle("Zephyr UDS Modul-Testsuite (Vollständige Abdeckung)")
-        self.resize(950, 800)
+        self.resize(950, 850)
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -83,13 +83,23 @@ class UdsGuiTesterWindow(QMainWindow):
         
         group_dtc.setLayout(layout_dtc)
         grid_layout.addWidget(group_dtc, 0, 1)
+
         # --- Gruppe 3: Ein-/Ausgabe & Routinen (uds_iocontrol.c / uds_routine.c) ---
         group_ctrl = QGroupBox("3. IO & Routines (uds_iocontrol.c / uds_routine.c)")
         layout_ctrl = QVBoxLayout()
         
-        self.btn_io = QPushButton("IO Control by Identifier (0x2F)")
-        self.btn_io.clicked.connect(self.run_io_control_test)
-        layout_ctrl.addWidget(self.btn_io)
+        # Aufsplittung in die 3 anwendungsspezifischen LED-Buttons
+        self.btn_io_on = QPushButton("🔴 LED Einschalten (0x2F - Param 0x03, State 0x01)")
+        self.btn_io_on.clicked.connect(lambda: self.run_io_control_test(param=0x03, state=0x01))
+        layout_ctrl.addWidget(self.btn_io_on)
+        
+        self.btn_io_off = QPushButton("⚪ LED Ausschalten (0x2F - Param 0x03, State 0x00)")
+        self.btn_io_off.clicked.connect(lambda: self.run_io_control_test(param=0x03, state=0x00))
+        layout_ctrl.addWidget(self.btn_io_off)
+        
+        self.btn_io_release = QPushButton("🔄 Kontrolle zurückgeben (0x2F - Param 0x00)")
+        self.btn_io_release.clicked.connect(lambda: self.run_io_control_test(param=0x00, state=None))
+        layout_ctrl.addWidget(self.btn_io_release)
         
         self.btn_routine = QPushButton("Routine Control Start (0x31)")
         self.btn_routine.clicked.connect(self.run_routine_control_test)
@@ -110,6 +120,7 @@ class UdsGuiTesterWindow(QMainWindow):
         self.btn_func.clicked.connect(self.run_functional_suppression_test)
         layout_flash.addWidget(self.btn_func)
         
+        # KORREKTUR: Das Layout wird jetzt korrekt an das group_flash Widget übergeben!
         group_flash.setLayout(layout_flash)
         grid_layout.addWidget(group_flash, 1, 1)
 
@@ -134,7 +145,7 @@ class UdsGuiTesterWindow(QMainWindow):
         try:
             self.isotp_socket.send(b"\x10\x03")
             resp = self.isotp_socket.recv()
-            if resp and len(resp) >= 2 and resp[0] == 0x50 and resp[1] == 0x03:
+            if resp and len(resp) >= 2 and int(resp[0]) == 0x50 and int(resp[1]) == 0x03:
                 self.log_output(f"[RX] Positive Response (0x50 0x03): {resp.hex().upper()}")
                 return True
             self.log_output(f"[RX] Negativ / Unerwartet: {resp.hex().upper() if resp else 'None'}")
@@ -154,7 +165,7 @@ class UdsGuiTesterWindow(QMainWindow):
             try:
                 self.isotp_socket.send(b"\x2E\xF1\x90\x01\x02")
                 resp_after = self.isotp_socket.recv()
-                if resp_after and len(resp_after) >= 3 and resp_after[0] == 0x7F and resp_after[2] == 0x7E:
+                if resp_after and len(resp_after) >= 3 and int(resp_after[0]) == 0x7F and int(resp_after[2]) == 0x7E:
                     self.log_output("[SUCCESS] S3 k_timer erfolgreich! Server ist autark zurückgefallen (NRC 0x7E).")
                 else:
                     self.log_output(f"[FAIL] Kein Fallback. Antwort: {resp_after.hex().upper() if resp_after else 'None'}")
@@ -175,7 +186,7 @@ class UdsGuiTesterWindow(QMainWindow):
                 QCoreApplication.processEvents()
             self.isotp_socket.send(b"\x27\x01")
             lock_resp = self.isotp_socket.recv()
-            if lock_resp and len(lock_resp) >= 3 and lock_resp[0] == 0x7F and lock_resp[2] == 0x36:
+            if lock_resp and len(lock_resp) >= 3 and int(lock_resp[0]) == 0x7F and int(lock_resp[2]) == 0x36:
                 self.log_output("[SUCCESS] Anti-Brute-Force-Sperre intakt (NRC 0x36 empfangen).")
             else:
                 self.log_output(f"[INFO] Antwort der ECU bei 4. Anfrage: {lock_resp.hex().upper() if lock_resp else 'None'}")
@@ -188,7 +199,7 @@ class UdsGuiTesterWindow(QMainWindow):
         try:
             self.isotp_socket.send(b"\x19\x02\x8F")
             resp = self.isotp_socket.recv()
-            if resp and resp[0] == 0x59:
+            if resp and int(resp[0]) == 0x59:
                 self.log_output(f"[SUCCESS] DTCs erfolgreich ausgelesen! Antwort-Bytes: {resp.hex().upper()}")
             else:
                 self.log_output(f"[FAIL] Negative Response vom C-Modul: {resp.hex().upper() if resp else 'None'}")
@@ -215,24 +226,20 @@ class UdsGuiTesterWindow(QMainWindow):
         except TimeoutError:
             self.log_output("[FAIL] Timeout beim asynchronen Löschen (ECU reagiert nicht mehr).")
 
-    def run_io_control_test(self):
+    def run_io_control_test(self, param, state=None):
         """
-        Validiert IO Control (uds_iocontrol.c).
-        Nutzt die exakte Big-Endian uint32 XOR-Maskierung deiner uds_app_verify_key_krypto
-        und fängt ID-Filterungen (NRC 0x31) standardkonform ab.
+        Validiert IO Control (uds_iocontrol.c) mit dynamischer Parameterübergabe.
+        Setzt DID 0x0123 und berechnet den XOR-Schlüssel passend zur Hardware.
         """
         if not self.isotp_socket: return
-        self.log_output("\n[START] Test: Input Output Control by Identifier (uds_iocontrol.c)...")
+        self.log_output(f"\n[START] Test: IO Control DID 0x0123 (Param: {hex(param)}, State: {state})...")
         
-        # Empfangspuffer vollständig leeren, um alte Restdaten zu flushen
+        # Empfangspuffer vollständig leeren
         try:
             self.isotp_socket.settimeout(0.01)
-            while True:
-                self.isotp_socket.recv()
-        except TimeoutError:
-            pass
-        finally:
-            self.isotp_socket.settimeout(2.0)
+            while True: self.isotp_socket.recv()
+        except TimeoutError: pass
+        finally: self.isotp_socket.settimeout(2.0)
 
         if self.send_extended_session():
             self.log_output(" -> Extended Session aktiv. Fordere Seed an (0x27 0x01)...")
@@ -241,85 +248,71 @@ class UdsGuiTesterWindow(QMainWindow):
                 seed_resp = self.isotp_socket.recv()
                 
                 if seed_resp and len(seed_resp) >= 6 and int(seed_resp[0]) == 0x67:
-                    # Extrahiere exakt die 4 Seed-Bytes der Hardware (Index 2 bis 5)
                     hardware_seed = seed_resp[2:6]
-                    self.log_output(f" -> Hardware-Seed empfangen: {hardware_seed.hex().upper()}")
+                    seed_val = (int(hardware_seed[0]) << 24) | (int(hardware_seed[1]) << 16) | \
+                               (int(hardware_seed[2]) << 8)  | int(hardware_seed[3])
                     
-                    # 1. Konvertiere Seed-Bytes in ein echtes uint32 (Big-Endian)
-                    seed_val = (int(hardware_seed[0]) << 24) | \
-                               (int(hardware_seed[1]) << 16) | \
-                               (int(hardware_seed[2]) << 8)  | \
-                               int(hardware_seed[3])
-                    
-                    # Ermittle das angeforderte Security Level aus der Antwort-Subfunktion (Index 1)
                     sub_function = int(seed_resp[1])
                     if sub_function == 0x01:
-                        self.log_output(" -> Berechne Krypto-Key für Level 1 Standard (Maske: 0xABCDE123)...")
                         expected_key = seed_val ^ 0xABCDE123
                     elif sub_function == 0x03:
-                        self.log_output(" -> Berechne Krypto-Key für Level 3 Extended (Maske: 0xDEADBEEF)...")
                         expected_key = seed_val ^ 0xDEADBEEF
-                    else:
-                        self.log_output(f"[FAIL] Unbekanntes Security-Level empfangen: {hex(sub_function)}")
-                        return
+                    else: return
 
-                    # 2. Wandle das uint32-Ergebnis zurück in ein Big-Endian 4-Byte-Array
                     valid_key = bytearray(4)
                     valid_key[0] = (expected_key >> 24) & 0xFF
                     valid_key[1] = (expected_key >> 16) & 0xFF
                     valid_key[2] = (expected_key >> 8) & 0xFF
                     valid_key[3] = expected_key & 0xFF
                     
-                    self.log_output(f" -> Sende mathematisch validierten Krypto-Schlüssel (0x27 0x02): {valid_key.hex().upper()}...")
                     self.isotp_socket.send(b"\x27\x02" + bytes(valid_key))
                     key_resp = self.isotp_socket.recv()
                     
-                    if key_resp and len(key_resp) >= 2 and int(key_resp[0]) == 0x67:
-                        self.log_output("[OK] Security Access erfolgreich GEWÄHRT!")
-                    elif key_resp and len(key_resp) >= 3 and int(key_resp[0]) == 0x7F and int(key_resp[2]) == 0x36:
-                        self.log_output("[WARN] ECU blockiert noch wegen aktiver Brute-Force Sperre. Bitte 10s warten!")
+                    if not (key_resp and len(key_resp) >= 2 and int(key_resp[0]) == 0x67):
+                        self.log_output("[FAIL] Security Access wurde verweigert.")
                         return
-                    else:
-                        self.log_output(f"[INFO] Schlüssel abgewiesen. Antwort: {key_resp.hex().upper() if key_resp else 'None'}")
+                    self.log_output("[OK] Security Access erfolgreich GEWÄHRT!")
                 else:
-                    self.log_output(f"[FAIL] Ungültige Seed-Antwort erhalten: {seed_resp.hex().upper() if seed_resp else 'None'}")
+                    self.log_output("[FAIL] Ungültiger Seed-Empfang.")
                     return
                 
-                # 3. Den eigentlichen IO-Befehl absetzen
-                self.log_output(" -> Sende IO-Control Befehl (0x2F)...")
-                self.isotp_socket.send(b"\x2F\xF1\x00\x03\x01")
+                # --- NATIVE ERWEITERUNG: ASSEMBLIERUNG DES LED-PAKETS ---
+                # Basis-Array: Dienst 0x2F + DID 0x0123 + Steuerungsparameter
+                payload = bytearray([0x2F, 0x01, 0x23, param])
+                
+                # Wenn Parameter 0x03 ist, muss zwingend das Zustand-Byte (0x01/0x00) angehängt werden
+                if param == 0x03 and state is not None:
+                    payload.append(state)
+                
+                self.log_output(f" -> Sende physisches ISO-TP Datenpaket: {payload.hex().upper()}")
+                self.isotp_socket.send(bytes(payload))
                 resp = self.isotp_socket.recv()
                 
                 if resp and len(resp) >= 1 and int(resp[0]) == 0x6F:
-                    self.log_output(f"[SUCCESS] IO-Eingriff erfolgreich! C-Modul akzeptiert: {resp.hex().upper()}")
+                    self.log_output(f"[SUCCESS] LED-Eingriff von Applikation akzeptiert! Antwort: {resp.hex().upper()}")
                 elif resp and len(resp) >= 3 and int(resp[0]) == 0x7F and int(resp[2]) == 0x31:
-                    # KORREKTUR: NRC 0x31 beweist, dass uds_iocontrol.c aktiv filtert -> Gültiges Testergebnis!
-                    self.log_output("[SUCCESS] Protokoll intakt: C-Modul filtert ungültige Parameter korrekt heraus (NRC 0x31).")
+                    self.log_output("[FAIL] Hardware meldet NRC 0x31 (Parameter/DID ungültig).")
                 elif resp and len(resp) >= 3 and int(resp[0]) == 0x7F and int(resp[2]) == 0x33:
-                    self.log_output("[INFO] IO-Eingriff blockiert (NRC 0x33). Sicherheitsstufe nicht erreicht.")
+                    self.log_output("[FAIL] Hardware meldet NRC 0x33 (Sicherheitsstufe blockiert).")
                 else:
-                    self.log_output(f"[FAIL] Unerwartete Reaktion bei IO Control: {resp.hex().upper() if resp else 'None'}")
+                    self.log_output(f"[FAIL] Unerwartete Core-Reaktion: {resp.hex().upper() if resp else 'None'}")
             except TimeoutError:
-                self.log_output("[FAIL] Timeout bei IO Control Kette.")
+                self.log_output("[FAIL] Timeout in der Kette.")
         else:
-            self.log_output("[FAIL] IO-Test abgebrochen, da Extended Session nicht gestartet werden konnte.")
+            self.log_output("[FAIL] Extended Session verweigert.")
 
     def run_routine_control_test(self):
         if not self.isotp_socket: return
         self.log_output("\n[START] Test: Routine Control Start (uds_routine.c)...")
         if self.send_extended_session():
-            self.log_output(" -> Extended Session aktiv. Sende Routine Start (0x31 0x01)...")
             try:
                 self.isotp_socket.send(b"\x31\x01\x02\x00")
                 resp = self.isotp_socket.recv()
                 if resp and len(resp) >= 1 and int(resp[0]) == 0x71:
-                    self.log_output(f"[SUCCESS] Routine-Start erfolgreich zurückgemeldet: {resp.hex().upper()}")
+                    self.log_output(f"[SUCCESS] Routine-Start erfolgreich: {resp.hex().upper()}")
                 else:
-                    self.log_output(f"[FAIL] Routine Control blockiert. Antwort der ECU: {resp.hex().upper() if resp else 'None'}")
-            except TimeoutError:
-                self.log_output("[FAIL] Timeout bei Routine Control.")
-        else:
-            self.log_output("[FAIL] Routine-Test abgebrochen, da Extended Session nicht gestartet werden konnte.")
+                    self.log_output(f"[FAIL] Routine blockiert: {resp.hex().upper() if resp else 'None'}")
+            except TimeoutError: self.log_output("[FAIL] Timeout.")
 
     def run_flash_pipeline_test(self):
         if not self.isotp_socket: return
@@ -329,13 +322,10 @@ class UdsGuiTesterWindow(QMainWindow):
                 self.isotp_socket.send(b"\x34\x00\x44\x00\x10\x00\x00\x00\x00\xFF\xFF")
                 resp = self.isotp_socket.recv()
                 if resp and len(resp) >= 1 and int(resp[0]) == 0x74:
-                    self.log_output(f"[SUCCESS] Flash-Pipeline erfolgreich geöffnet: {resp.hex().upper()}")
+                    self.log_output(f"[SUCCESS] Flash-Pipeline geöffnet: {resp.hex().upper()}")
                 else:
-                    self.log_output(f"[FAIL] Flash-Pipeline abgelehnt: {resp.hex().upper() if resp else 'None'}")
-            except TimeoutError:
-                self.log_output("[FAIL] Timeout bei Flash Pipeline Request.")
-        else:
-            self.log_output("[FAIL] Flash-Pipeline-Test abgebrochen (Extended Session verweigert).")
+                    self.log_output(f"[FAIL] Abgelehnt: {resp.hex().upper() if resp else 'None'}")
+            except TimeoutError: self.log_output("[FAIL] Timeout.")
 
     def run_functional_suppression_test(self):
         self.log_output("\n[START] Test: Funktionale NRC-Unterdrückung (Broadcast an 0x7DF)...")
@@ -343,19 +333,15 @@ class UdsGuiTesterWindow(QMainWindow):
             raw_bus = can.interface.Bus(interface='socketcan', channel=self.interface_name, bitrate=500000)
             msg = can.Message(arbitration_id=0x7DF, data=[0x02, 0x99, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], is_extended_id=False)
             raw_bus.send(msg)
-            self.log_output(" -> Paket an funktionale ID 0x7DF gesendet. Lausche auf Antworten...")
-
             start_time = time.time()
             violating_nrc = False
             while time.time() - start_time < 1.0:
                 QCoreApplication.processEvents()
                 rx_msg = raw_bus.recv(timeout=0.05)
                 if rx_msg and rx_msg.arbitration_id == 0x7E8 and len(rx_msg.data) >= 3 and int(rx_msg.data[0]) == 0x7F:
-                    self.log_output(f"[FAIL] ISO-TP Verstoß! ECU antwortete funktional mit NRC {hex(rx_msg.data[2])}")
+                    self.log_output(f"[FAIL] Verstoß! ECU antwortete funktional mit NRC {hex(rx_msg.data[2])}")
                     violating_nrc = True
                     break
-            if not violating_nrc:
-                self.log_output("[SUCCESS] Protokollkonform: NRC wurde auf der funktionalen ID unterdrückt.")
+            if not violating_nrc: self.log_output("[SUCCESS] Protokollkonform: Keine NRCs funktional.")
             raw_bus.shutdown()
-        except Exception as e:
-            self.log_output(f"[SYSTEM-FEHLER] CAN-Bus-Zugriff gescheitert: {str(e)}")
+        except Exception as e: self.log_output(f"[FEHLER] {str(e)}")
