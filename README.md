@@ -13,7 +13,7 @@ This module decouples network-layer packet processing (ISO-TP over CAN) and diag
 
 To see this driver module in action within a fully working environment, check out the official companion application repository:
 
-👉 **[zephyr-uds-app](https://github.com)**
+👉 **[zephyr-uds-app](https://github.com/borob-engineering/zephyr-uds-app)**
 
 This reference application demonstrates how to mount the required flash filesystem, override the protocol hooks, configure specific board overlays (e.g., for STM32), and integrate with MCUboot for full over-the-air firmware update streaming.
 
