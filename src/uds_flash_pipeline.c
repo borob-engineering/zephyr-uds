@@ -1,6 +1,15 @@
+/*
+ * Copyright (c) 2026 borob-engineering
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 /**
- * @file uds_flash_pipeline.c
- * @brief Implementierung der Services 0x34, 0x36 und 0x37 für die Flash-Pipeline (Software-Flashing)
+ * @file
+ * @brief Implementation of UDS Services 0x34, 0x36, and 0x37 for the flashing pipeline.
+ *
+ * This file contains the complete sequential pipeline logic required for secure and
+ * standard-compliant software flashing (firmware updates) on top of physical flash drivers.
  */
 
 #include "uds_flash_pipeline.h"
@@ -14,16 +23,22 @@
 
 LOG_MODULE_DECLARE(uds_server, LOG_LEVEL_INF);
 
+/**
+ * @brief Internal tracking states of the software flashing sequence.
+ */
 typedef enum {
+	/** Default state, pipeline is locked and inactive */
 	FLASH_STATE_IDLE,
+	/** Download session negotiated, target memory erased, awaiting binary streaming */
 	FLASH_STATE_DOWNLOAD_APPROVED,
+	/** Consecutive block data transfer active */
 	FLASH_STATE_TRANSFERRING
 } flash_state_t;
 
 static flash_state_t pipeline_state = FLASH_STATE_IDLE;
-static uint32_t memory_address = 0;
-static uint32_t memory_size = 0;
-static uint32_t bytes_received = 0;
+static uint32_t memory_address;
+static uint32_t memory_size;
+static uint32_t bytes_received;
 static uint8_t expected_block_counter = 1;
 
 void uds_flash_pipeline_init(void)
@@ -40,6 +55,12 @@ void uds_handle_request_download(uint8_t *req, size_t len, uint8_t *tx_buf,
                                  void (*nrc_cb)(uint8_t, uint8_t))
 {
 	uint8_t sid = req[0];
+	uint8_t alf_id;
+	uint8_t memory_address_len;
+	uint8_t memory_size_len;
+	size_t idx;
+	int i;
+	int ret;
 
 	if (uds_session_get() == UDS_SESSION_DEFAULT) {
 		nrc_cb(sid, UDS_NRC_SUB_FUNCTION_NOT_SUPPORTED_IN_ACTIVE_SESS);
@@ -56,9 +77,9 @@ void uds_handle_request_download(uint8_t *req, size_t len, uint8_t *tx_buf,
 		return;
 	}
 
-	uint8_t alf_id = req[2];
-	uint8_t memory_address_len = alf_id & 0x0F;
-	uint8_t memory_size_len = (alf_id >> 4) & 0x0F;
+	alf_id = req[2];
+	memory_address_len = alf_id & 0x0F;
+	memory_size_len = (alf_id >> 4) & 0x0F;
 
 	if (len != (3 + memory_address_len + memory_size_len)) {
 		nrc_cb(sid, UDS_NRC_INCORRECT_LENGTH_OR_INVALID_FORMAT);
@@ -66,22 +87,23 @@ void uds_handle_request_download(uint8_t *req, size_t len, uint8_t *tx_buf,
 	}
 
 	memory_address = 0;
-	size_t idx = 3;
-	for (int i = 0; i < memory_address_len; i++) {
+	idx = 3;
+	for (i = 0; i < memory_address_len; i++) {
 		memory_address = (memory_address << 8) | req[idx++];
 	}
 
 	memory_size = 0;
-	for (int i = 0; i < memory_size_len; i++) {
+	for (i = 0; i < memory_size_len; i++) {
 		memory_size = (memory_size << 8) | req[idx++];
 	}
 
-	LOG_INF("UDS Download Request erhalten. Addr: 0x%08X, Size: %u Bytes", memory_address, memory_size);
+	LOG_INF("UDS Download Request received. Addr: 0x%08X, Size: %u Bytes",
+		memory_address, memory_size);
 
-	/* ZENTRALE ÄNDERUNG: Vor dem Download wird der Zielbereich im Flash hardwareseitig gelöscht */
-	int ret = uds_app_flash_erase_target(memory_address, memory_size);
+	/* Clear target area inside physical memory flash before data ingestion */
+	ret = uds_app_flash_erase_target(memory_address, memory_size);
 	if (ret != 0) {
-		LOG_ERR("Hardware-Flash loeschen fehlgeschlagen: %d", ret);
+		LOG_ERR("Hardware flash erasure target failed: %d", ret);
 		nrc_cb(sid, UDS_NRC_UPLOAD_DOWNLOAD_NOT_ACCEPTED);
 		return;
 	}
@@ -103,8 +125,13 @@ void uds_handle_transfer_data(uint8_t *req, size_t len, uint8_t *tx_buf,
                               void (*nrc_cb)(uint8_t, uint8_t))
 {
 	uint8_t sid = req[0];
+	uint8_t block_counter;
+	size_t payload_len;
+	uint32_t current_offset;
+	int ret;
 
-	if (pipeline_state != FLASH_STATE_DOWNLOAD_APPROVED && pipeline_state != FLASH_STATE_TRANSFERRING) {
+	if (pipeline_state != FLASH_STATE_DOWNLOAD_APPROVED &&
+	    pipeline_state != FLASH_STATE_TRANSFERRING) {
 		nrc_cb(sid, UDS_NRC_REQUEST_SEQUENCE_ERROR);
 		return;
 	}
@@ -114,19 +141,19 @@ void uds_handle_transfer_data(uint8_t *req, size_t len, uint8_t *tx_buf,
 		return;
 	}
 
-	uint8_t block_counter = req[1];
+	block_counter = req[1];
 	if (block_counter != expected_block_counter) {
 		nrc_cb(sid, UDS_NRC_WRONG_BLOCK_SEQUENCE_COUNTER);
 		return;
 	}
 
-	size_t payload_len = len - 2;
+	payload_len = len - 2;
+	current_offset = memory_address + bytes_received;
 
-	/* ZENTRALE ÄNDERUNG: Eingehenden Block direkt per Offset physisch in den Flash schreiben */
-	uint32_t current_offset = memory_address + bytes_received;
-	int ret = uds_app_flash_write_block(current_offset, &req[2], payload_len);
+	/* Stream the parsed block chunk payload directly into target flash layer memory */
+	ret = uds_app_flash_write_block(current_offset, &req[2], payload_len);
 	if (ret != 0) {
-		LOG_ERR("Schreiben im Flash bei Offset 0x%08X fehlgeschlagen: %d", current_offset, ret);
+		LOG_ERR("Writing to flash target failed at offset 0x%08X: %d", current_offset, ret);
 		nrc_cb(sid, UDS_NRC_TRANSFER_DATA_SUSPENDED);
 		return;
 	}
@@ -147,16 +174,19 @@ void uds_handle_request_transfer_exit(uint8_t *req, size_t len, uint8_t *tx_buf,
 {
 	uint8_t sid = req[0];
 
+	ARG_UNUSED(len);
+
 	if (pipeline_state != FLASH_STATE_TRANSFERRING) {
 		nrc_cb(sid, UDS_NRC_REQUEST_SEQUENCE_ERROR);
 		return;
 	}
 
 	if (bytes_received < memory_size) {
-		LOG_WRN("Warnung: Weniger Bytes erhalten (%u) als via 0x34 angefordert (%u)", bytes_received, memory_size);
+		LOG_WRN("Warning: Fewer bytes received (%u) than requested via 0x34 (%u)",
+			bytes_received, memory_size);
 	}
 
-	LOG_INF("Transfer erfolgreich beendet. Insgesamt %u Bytes geflasht.", bytes_received);
+	LOG_INF("Transfer completed successfully. Total %u bytes written to flash.", bytes_received);
 	pipeline_state = FLASH_STATE_IDLE;
 
 	tx_buf[0] = sid + 0x40;
