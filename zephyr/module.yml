@@ -1,4 +1,7 @@
-name: uds_server
+# Copyright (c) 2026 borob-engineering
+# SPDX-License-Identifier: Apache-2.0
+
+name: zephyr-uds-server
 build:
   cmake: .
   kconfig: src/Kconfig.uds
