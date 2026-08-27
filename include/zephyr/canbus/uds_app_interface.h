@@ -18,6 +18,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <zephyr/kvss/nvs.h>
 #include "uds_types.h"
 
 #ifdef __cplusplus
@@ -167,6 +168,25 @@ int uds_app_verify_key_krypto(uint8_t security_level, const uint8_t *seed, size_
  * @retval -ENOENT Periodic DID not supported (maps to NRC 0x31).
  */
 int uds_app_get_periodic_did(uint8_t periodic_did, uint8_t *data_out, size_t *len_out);
+
+/**
+ * @brief Application hook to retrieve the non-volatile storage filesystem instance.
+ *
+ * @return Pointer to the application-managed and mounted NVS filesystem context.
+ */
+struct nvs_fs *uds_app_get_nvs_context(void);
+
+/**
+ * @brief Application hook to clear dynamic DTC entries from non-volatile storage.
+ *
+ * @param fs        Pointer to the active NVS filesystem.
+ * @param dtc_group The 3-byte diagnostic trouble code group (e.g., 0xFFFFFF for all).
+ *
+ * @retval 0       On success.
+ * @retval -EIO     On flash hardware write/erase communication failure.
+ * @retval -EINVAL  Invalid DTC group scope requested.
+ */
+int uds_app_clear_persistent_dtcs(struct nvs_fs *fs, uint32_t dtc_group);
 
 #ifdef __cplusplus
 }

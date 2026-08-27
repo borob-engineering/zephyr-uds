@@ -89,3 +89,49 @@ __weak int uds_app_flash_write_block(uint32_t address_offset, const uint8_t *dat
 
 	return -EOPNOTSUPP;
 }
+
+__weak int uds_app_get_freeze_frame(uint32_t dtc, uint8_t record_num, uint8_t *data_out,
+				     size_t *len_out, size_t max_len)
+{
+	ARG_UNUSED(dtc);
+	ARG_UNUSED(record_num);
+	ARG_UNUSED(data_out);
+	ARG_UNUSED(len_out);
+	ARG_UNUSED(max_len);
+
+	return -ENOENT;
+}
+
+__weak int uds_app_verify_key_krypto(uint8_t security_level, const uint8_t *seed, size_t seed_len,
+				     const uint8_t *received_key, size_t key_len)
+{
+	ARG_UNUSED(security_level);
+	ARG_UNUSED(seed);
+	ARG_UNUSED(seed_len);
+	ARG_UNUSED(received_key);
+	ARG_UNUSED(key_len);
+
+	return -EACCES;
+}
+
+__weak int uds_app_get_periodic_did(uint8_t periodic_did, uint8_t *data_out, size_t *len_out)
+{
+	ARG_UNUSED(periodic_did);
+	ARG_UNUSED(data_out);
+	ARG_UNUSED(len_out);
+
+	return -ENOENT;
+}
+
+__weak struct nvs_fs *uds_app_get_nvs_context(void)
+{
+	return NULL;
+}
+
+__weak int uds_app_clear_persistent_dtcs(struct nvs_fs *fs, uint32_t dtc_group)
+{
+	ARG_UNUSED(fs);
+	ARG_UNUSED(dtc_group);
+
+	return -EOPNOTSUPP;
+}

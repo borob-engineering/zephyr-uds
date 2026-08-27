@@ -6,48 +6,26 @@
 
 /**
  * @file
- * @brief Implementation of UDS Service 0x19 (Read Diagnostic Trouble Code Information).
- *
- * This file handles retrieving diagnostic fault memory arrays, checking active status
- * bitmasks, and pulling context snapshot freeze frames via application interfaces.
+ * @brief Implementation of UDS Service 0x19 (Read DTC Information) via persistent NVS storage.
  */
 
 #include "uds_read_dtc.h"
 #include "uds_app_interface.h"
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/kvss/nvs.h>
 #include <string.h>
+#include <errno.h>
 
 LOG_MODULE_DECLARE(uds_server, LOG_LEVEL_INF);
 
-#define MOCK_DTC_COUNT 2
-#define DTC_STATUS_AVAILABILITY_MASK 0x09 
-
-/** @brief Internal mock database storage for primitive DTC records. */
-static uds_dtc_t mock_dtc_server[MOCK_DTC_COUNT];
+#define NVS_DTC_START_ID 0x0100
+#define NVS_DTC_MAX_ENTRIES 16
+#define DTC_STATUS_AVAILABILITY_MASK 0x09
 
 void uds_read_dtc_init(void)
 {
-	mock_dtc_server[0].code[0] = 0x12;
-	mock_dtc_server[0].code[1] = 0x34;
-	mock_dtc_server[0].code[2] = 0x56;
-	mock_dtc_server[0].status  = 0x09;
-
-	mock_dtc_server[1].code[0] = 0xC1;
-	mock_dtc_server[1].code[1] = 0x00;
-	mock_dtc_server[1].code[2] = 0x00;
-	mock_dtc_server[1].status  = 0x08;
-}
-
-void uds_read_dtc_clear_all(uint32_t dtc_group)
-{
-	int i;
-
-	for (i = 0; i < MOCK_DTC_COUNT; i++) {
-		if (dtc_group == 0xFFFFFF) {
-			mock_dtc_server[i].status = 0x00;
-		}
-	}
+	LOG_INF("UDS Persistent DTC Reader Engine initialized.");
 }
 
 void uds_read_dtc_handle(uint8_t *req, size_t len, uint8_t *tx_buf, 
@@ -61,6 +39,8 @@ void uds_read_dtc_handle(uint8_t *req, size_t len, uint8_t *tx_buf,
 	uint32_t req_dtc;
 	uint8_t record_num;
 	size_t out_len;
+	struct nvs_fs *fs;
+	uds_dtc_t temp_dtc;
 	int ret;
 	int i;
 
@@ -70,6 +50,12 @@ void uds_read_dtc_handle(uint8_t *req, size_t len, uint8_t *tx_buf,
 	}
 
 	sub_function = req[1];
+	fs = uds_app_get_nvs_context();
+
+	if (fs == NULL) {
+		nrc_cb(sid, UDS_NRC_CONDITIONS_NOT_CORRECT);
+		return;
+	}
 
 	if (sub_function == 0x02) { /* reportDTCByStatusMask */
 		if (len < 3) {
@@ -83,13 +69,15 @@ void uds_read_dtc_handle(uint8_t *req, size_t len, uint8_t *tx_buf,
 		tx_buf[tx_idx++] = sub_function;
 		tx_buf[tx_idx++] = DTC_STATUS_AVAILABILITY_MASK;
 
-		for (i = 0; i < MOCK_DTC_COUNT; i++) {
-			if (mock_dtc_server[i].status != 0x00 && 
-			    (mock_dtc_server[i].status & client_mask) != 0) {
-				tx_buf[tx_idx++] = mock_dtc_server[i].code[0];
-				tx_buf[tx_idx++] = mock_dtc_server[i].code[1];
-				tx_buf[tx_idx++] = mock_dtc_server[i].code[2];
-				tx_buf[tx_idx++] = mock_dtc_server[i].status;
+		for (i = 0; i < NVS_DTC_MAX_ENTRIES; i++) {
+			ret = nvs_read(fs, NVS_DTC_START_ID + i, &temp_dtc, sizeof(temp_dtc));
+			if (ret == sizeof(temp_dtc)) {
+				if (temp_dtc.status != 0x00 && (temp_dtc.status & client_mask) != 0) {
+					tx_buf[tx_idx++] = temp_dtc.code[0];
+					tx_buf[tx_idx++] = temp_dtc.code[1];
+					tx_buf[tx_idx++] = temp_dtc.code[2];
+					tx_buf[tx_idx++] = temp_dtc.status;
+				}
 			}
 		}
 		send_cb(tx_buf, tx_idx);
@@ -111,8 +99,7 @@ void uds_read_dtc_handle(uint8_t *req, size_t len, uint8_t *tx_buf,
 		tx_buf[3] = req[3];
 		tx_buf[4] = req[4];
 
-		ret = uds_app_get_freeze_frame(req_dtc, record_num, &tx_buf[5], 
-		                               &out_len, UDS_BUFF_SIZE - 5);
+		ret = uds_app_get_freeze_frame(req_dtc, record_num, &tx_buf[5], &out_len, UDS_BUFF_SIZE - 5);
 		if (ret == 0) {
 			send_cb(tx_buf, 5 + out_len);
 		} else {
