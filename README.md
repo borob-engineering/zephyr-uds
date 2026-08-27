@@ -9,11 +9,21 @@ This module decouples network-layer packet processing (ISO-TP over CAN) and diag
 
 ---
 
+## 🚀 Reference Application
+
+To see this driver module in action within a fully working environment, check out the official companion application repository:
+
+👉 **[zephyr-uds-app](https://github.com)**
+
+This reference application demonstrates how to mount the required flash filesystem, override the protocol hooks, configure specific board overlays (e.g., for STM32), and integrate with MCUboot for full over-the-air firmware update streaming.
+
+---
+
 ## Key Features
 
 - **ISO-TP Core Server (`0x10`, `0x3E`):** Multi-threaded physical and functional request processing leveraging Zephyr's native CAN and ISO-TP driver stacks.
 - **Persistent Fault Memory (`0x14`, `0x19`):** Non-Volatile Storage (NVS) integrated DTC management utilizing Zephyr's KVSS/NVS flash subsystem with hardware-optimized wear leveling.
-- **Brute-Force Attack Prevention (`0x27`):** Non-volatile key-fail counting and automated hardware lockout tracking using true entropy generators (`drivers/entropy.h`).
+- **Brute-Force Attack Prevention (`0x27`):** Non-volatile key-fail counting and automated hardware lockout tracking using true hardware entropy generators.
 - **Flexible Data Routines (`0x22`, `0x2E`, `0x2C`, `0x2A`):** Supports dynamic Data Identifiers (DID aggregation), rapid periodic identifiers via background scheduling threads, and fully persistent VIN management.
 - **Bootloader & Flash Pipeline (`0x34`, `0x36`, `0x37`):** Sequential streaming architecture enabling block-wise software flashing sequences with pre-erase hooks.
 - **Actuator Signal Substitution (`0x2F`):** Abstracted IO Control interface with session/security guardrails.
@@ -81,7 +91,7 @@ manifest:
       path: modules/lib/zephyr-uds
 ```
 
-Alternatively, you can compile it directly by passing the path parameters:
+Alternatively, you can compile it directly by passing the path parameters to your build command:
 ```bash
 west build -b <your_board> -- -DZEPHYR_EXTRA_MODULES=<path_to_module>/zephyr-uds
 ```
@@ -114,7 +124,7 @@ CONFIG_UDS_SEC_SEED_SIZE=4
 ```
 
 ### Devicetree Requirements
-The module relies on the presence of a dedicated hardware partition for permanent parameters storage and anti-tamper tracking. Ensure your `app.overlay` contains the `storage_partition` nodelabel pointing to a valid fixed flash allocation block:
+The module relies on the presence of a dedicated hardware partition for permanent parameter storage and anti-tamper tracking. Ensure your `app.overlay` contains the `storage_partition` nodelabel pointing to a valid fixed flash allocation block:
 
 ```dts
 &flash0 {
@@ -135,7 +145,7 @@ The module relies on the presence of a dedicated hardware partition for permanen
 
 ## Application Implementation Pattern
 
-To leverage the driver, the application must instantiate and provide its active storage filesystem handle by overriding the weak abstraction boundaries:
+To leverage the driver, the application must instantiate and provide its active storage filesystem handle by overriding the weak abstraction boundaries. Code examples for this bridging pattern can be found directly within the `app/src/app_uds_impl.c` file of the **zephyr-uds-app** project.
 
 ```c
 #include <zephyr/kernel.h>
