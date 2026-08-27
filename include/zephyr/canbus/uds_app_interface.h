@@ -188,6 +188,19 @@ struct nvs_fs *uds_app_get_nvs_context(void);
  */
 int uds_app_clear_persistent_dtcs(struct nvs_fs *fs, uint32_t dtc_group);
 
+/**
+ * @brief Application hook to write a configuration data block to persistent storage.
+ *
+ * @param fs     Pointer to the active NVS filesystem.
+ * @param nvs_id The unique NVS parameter ID assigned by the application.
+ * @param data   Pointer to the incoming data stream to persist.
+ * @param len    Length of the configuration data block in bytes.
+ *
+ * @retval 0      On success.
+ * @retval -EIO   On flash hardware write errors.
+ */
+int uds_app_write_persistent_data(struct nvs_fs *fs, uint16_t nvs_id, const uint8_t *data, size_t len);
+
 #ifdef __cplusplus
 }
 #endif

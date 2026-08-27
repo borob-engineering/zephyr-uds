@@ -135,3 +135,13 @@ __weak int uds_app_clear_persistent_dtcs(struct nvs_fs *fs, uint32_t dtc_group)
 
 	return -EOPNOTSUPP;
 }
+
+__weak int uds_app_write_persistent_data(struct nvs_fs *fs, uint16_t nvs_id, const uint8_t *data, size_t len)
+{
+	ARG_UNUSED(fs);
+	ARG_UNUSED(nvs_id);
+	ARG_UNUSED(data);
+	ARG_UNUSED(len);
+
+	return -EOPNOTSUPP;
+}
