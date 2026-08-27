@@ -1,4 +1,5 @@
-# zephyr-uds-server/src/Kconfig.uds
+# Copyright (c) 2026 borob-engineering
+# SPDX-License-Identifier: Apache-2.0
 
 menu "UDS Server Configuration"
 

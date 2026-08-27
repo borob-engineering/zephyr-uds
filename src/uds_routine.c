@@ -1,6 +1,15 @@
+/*
+ * Copyright (c) 2026 borob-engineering
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 /**
- * @file uds_routine.c
- * @brief Generische Routine Control Engine (0x31) mit periodischem NRC 0x78 Handling
+ * @file
+ * @brief Implementation of UDS Service 0x31 (Routine Control) with cyclic NRC 0x78 handling.
+ *
+ * This file orchestrates long-running application-specific test routines asynchronously
+ * using the Zephyr system workqueue while maintaining standard-compliant response-pending mechanics.
  */
 
 #include "uds_routine.h"
@@ -12,11 +21,11 @@
 
 LOG_MODULE_DECLARE(uds_server, LOG_LEVEL_INF);
 
-#define ROUTINE_NRC78_PERIOD_MS 20
+#define UDS_ROUTINE_NRC78_PERIOD_MS 20
 
 static volatile routine_status_t erase_routine_status = ROUTINE_IDLE;
-static uint8_t routine_exit_info = 0x00;
-static uint16_t active_routine_id = 0;
+static uint8_t routine_exit_info;
+static uint16_t active_routine_id;
 
 static struct k_work routine_work;
 static struct k_timer routine_nrc78_timer;
@@ -24,27 +33,37 @@ static struct k_timer routine_nrc78_timer;
 static uint8_t local_routine_tx_buf[5];
 static uint8_t stored_routine_sid = 0x31;
 
-static void (*stored_routine_send_cb)(const uint8_t *, size_t) = NULL;
-static void (*stored_routine_nrc_cb)(uint8_t, uint8_t) = NULL;
+static void (*stored_routine_send_cb)(const uint8_t *, size_t);
+static void (*stored_routine_nrc_cb)(uint8_t, uint8_t);
 
 /**
- * @brief Zyklischer Timer-Callback für Routine Control Response Pending
+ * @brief Cyclic timer callback issuing standard response-pending (NRC 0x78) frames.
+ *
+ * @param timer Pointer to the expiring kernel timer instance.
  */
 static void routine_nrc78_timer_cb(struct k_timer *timer)
 {
 	ARG_UNUSED(timer);
+
 	if (stored_routine_nrc_cb != NULL) {
 		stored_routine_nrc_cb(stored_routine_sid, UDS_NRC_RESPONSE_PENDING);
 	}
 }
 
+/**
+ * @brief Asynchronous routine worker running inside the system workqueue context.
+ *
+ * @param work Pointer to the triggered work queue tracking structure.
+ */
 static void routine_worker_handler(struct k_work *work)
 {
-	ARG_UNUSED(work);
 	uint8_t app_info = 0;
+	int ret;
+
+	ARG_UNUSED(work);
 	
-	/* Lang andauernde Applikationsroutine ausführen (z.B. 1500 ms Sektorvalidierung) */
-	int ret = uds_app_routine_start(active_routine_id, &app_info);
+	/* Execute long-running hardware or flash layout validation routine */
+	ret = uds_app_routine_start(active_routine_id, &app_info);
 
 	if (ret == 0) {
 		erase_routine_status = ROUTINE_COMPLETED;
@@ -54,7 +73,7 @@ static void routine_worker_handler(struct k_work *work)
 		routine_exit_info = 0x0F;
 	}
 
-	/* ZENTRALE SERIEN-REGEL: Den zyklischen Routine-Timer sofort stoppen */
+	/* Stop the cyclic response pending supervisor timer immediately upon completion */
 	k_timer_stop(&routine_nrc78_timer);
 
 	if (stored_routine_send_cb != NULL) {
@@ -78,8 +97,19 @@ void uds_routine_handle_control(uint8_t *req, size_t len,
                                 void (*send_cb)(const uint8_t *, size_t), 
                                 void (*nrc_cb)(uint8_t, uint8_t))
 {
-	if (len == 0 || req == NULL) return;
-	uint8_t sid = req[0];
+	uint8_t sid;
+	uint8_t sub_function;
+	uint16_t routine_id;
+	uint8_t app_status;
+	uint8_t app_exit;
+	uint8_t sync_tx_buf[6];
+	int ret;
+
+	if (len == 0 || req == NULL) {
+		return;
+	}
+
+	sid = req[0];
 
 	if (uds_session_get() == UDS_SESSION_DEFAULT) {
 		nrc_cb(sid, UDS_NRC_SUB_FUNCTION_NOT_SUPPORTED_IN_ACTIVE_SESS);
@@ -91,8 +121,8 @@ void uds_routine_handle_control(uint8_t *req, size_t len,
 		return;
 	}
 
-	uint8_t sub_function = req[1];
-	uint16_t routine_id = ((uint16_t)req[2] << 8) | req[3];
+	sub_function = req[1];
+	routine_id = ((uint16_t)req[2] << 8) | req[3];
 
 	switch (sub_function) {
 	case 0x01: /* startRoutine */
@@ -108,31 +138,29 @@ void uds_routine_handle_control(uint8_t *req, size_t len,
 		stored_routine_nrc_cb = nrc_cb;
 		stored_routine_sid = sid;
 
-		/* Periodischen NRC78-Timer für die Routine aktivieren */
-		k_timer_start(&routine_nrc78_timer, K_NO_WAIT, K_MSEC(ROUTINE_NRC78_PERIOD_MS));
+		/* Fire the periodic NRC 0x78 supervisor layout timer loop */
+		k_timer_start(&routine_nrc78_timer, K_NO_WAIT, K_MSEC(UDS_ROUTINE_NRC78_PERIOD_MS));
 		
 		k_work_submit(&routine_work);
 		break;
 
 	case 0x03: /* requestRoutineResults */
-		{
-			uint8_t app_status = 0, app_exit = 0;
-			int ret = uds_app_routine_request_results(routine_id, &app_status, &app_exit);
-			if (ret != 0) {
-				nrc_cb(sid, UDS_NRC_REQUEST_OUT_OF_RANGE);
-				return;
-			}
-			
-			uint8_t sync_tx_buf[6];
-			sync_tx_buf[0] = sid + 0x40;
-			sync_tx_buf[1] = sub_function;
-			sync_tx_buf[2] = req[2];
-			sync_tx_buf[3] = req[3];
-			sync_tx_buf[4] = app_status;
-			sync_tx_buf[5] = app_exit;
-			
-			send_cb(sync_tx_buf, 6);
+		app_status = 0;
+		app_exit = 0;
+		ret = uds_app_routine_request_results(routine_id, &app_status, &app_exit);
+		if (ret != 0) {
+			nrc_cb(sid, UDS_NRC_REQUEST_OUT_OF_RANGE);
+			return;
 		}
+			
+		sync_tx_buf[0] = sid + 0x40;
+		sync_tx_buf[1] = sub_function;
+		sync_tx_buf[2] = req[2];
+		sync_tx_buf[3] = req[3];
+		sync_tx_buf[4] = app_status;
+		sync_tx_buf[5] = app_exit;
+			
+		send_cb(sync_tx_buf, 6);
 		break;
 
 	default:
