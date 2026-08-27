@@ -1,7 +1,9 @@
 # Zephyr UDS (ISO 14229-1) Server Module
 
-[![License](https://shields.io)](https://opensource.org)
-[![Zephyr](https://shields.io)](https://zephyrproject.org)
+[![License](https://img.shields.io/github/license/borob-engineering/zephyr-uds)](https://www.apache.org/licenses/LICENSE-2.0)
+[![Zephyr Project](https://shields.io)](https://zephyrproject.org)
+
+
 
 A highly modular, hardware-abstracted, and fully compliant **Unified Diagnostic Services (UDS / ISO 14229-1)** server subsystem tailored specifically for **Zephyr RTOS v4.4.0**. 
 
@@ -67,8 +69,7 @@ This reference application demonstrates how to mount the required flash filesyst
 │   ├── uds_security.h
 │   ├── uds_server.c            # Central network engine interface loop
 │   ├── uds_session.c           # Service 0x10 - Diagnostic session state machine
-│   ├── uds_session.h
-│   └── uds_weak_defaults.c     # Safe application interface default fallback hooks
+│   └── uds_session.h
 └── zephyr
     └── module.yml              # West integration meta-descriptor for module discovery
 ```
