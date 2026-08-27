@@ -34,6 +34,9 @@
 #include "uds_iocontrol.h"
 #include "uds_app_interface.h"
 
+/* NEU: Einbindung des Skalierungsdienst-Headers */
+#include "uds_read_scaling.h"
+
 LOG_MODULE_REGISTER(uds_server, LOG_LEVEL_INF);
 
 #define UDS_RX_THREAD_STACK_SIZE 2048
@@ -201,7 +204,6 @@ static void uds_process_request(uint8_t *req, size_t len, uds_addressing_t addr_
 		}
 		read_did = ((uint16_t)req[1] << 8) | req[2];
 		
-		/* KORREKTUR: Nutze uds_send_response statt dem fehlerhaften send_cb */
 		if (uds_read_dynamic_did_payload(read_did, &uds_tx_buf[3], &d_len) == 0) {
 			uds_tx_buf[0] = sid + 0x40;
 			uds_tx_buf[1] = req[1];
@@ -221,6 +223,11 @@ static void uds_process_request(uint8_t *req, size_t len, uds_addressing_t addr_
 		} else {
 			uds_send_nrc(sid, UDS_NRC_REQUEST_OUT_OF_RANGE);
 		}
+		break;
+
+	/* NEU: Integration von Service 0x24 (Read Scaling Data By Identifier) */
+	case 0x24:
+		uds_handle_read_scaling_data(req, len, uds_tx_buf, uds_send_response, uds_send_nrc);
 		break;
 
 	case 0x27:

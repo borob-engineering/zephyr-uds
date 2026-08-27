@@ -201,6 +201,22 @@ int uds_app_clear_persistent_dtcs(struct nvs_fs *fs, uint32_t dtc_group);
  */
 int uds_app_write_persistent_data(struct nvs_fs *fs, uint16_t nvs_id, const uint8_t *data, size_t len);
 
+/**
+ * @brief Read Scaling Data By Identifier (Service 0x24).
+ *
+ * Retrieves the automotive scaling formula and coefficients for a specific DID.
+ *
+ * @param did      The 16-bit Data Identifier to query.
+ * @param buf_out  Pointer to the buffer where scaling bytes should be stored.
+ * @param len_out  Pointer to store the actual number of bytes copied.
+ * @param max_len  Maximum capacity of the buf_out buffer.
+ *
+ * @retval 0 On success.
+ * @retval -ENOENT DID not found or scaling data not supported (maps to NRC 0x31).
+ * @retval -ENOMEM Buffer too small for scaling data (maps to NRC 0x14).
+ */
+int uds_app_read_scaling_data(uint16_t did, uint8_t *buf_out, size_t *len_out, size_t max_len);
+
 #ifdef __cplusplus
 }
 #endif

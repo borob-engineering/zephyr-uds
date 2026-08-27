@@ -17,6 +17,7 @@ if(CONFIG_UDS_SERVER)
     src/uds_reset.c
     src/uds_clear_dtc.c
     src/uds_read_dtc.c
+    src/uds_write_did.h
     src/uds_write_did.c
     src/uds_flash_pipeline.c
     src/uds_iocontrol.c
@@ -24,6 +25,7 @@ if(CONFIG_UDS_SERVER)
     src/uds_periodic.c
     src/uds_dynamic_did.c
     src/uds_data_storage.c
+    src/uds_read_scaling.c
   )
 
   # Export public interface directory globally to the application layer
